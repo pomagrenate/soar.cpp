@@ -13,15 +13,15 @@ class TensorView {
 public:
     using element_type = T;
 
-    constexpr TensorView() noexcept : data_(nullptr), shape_() {}
-    constexpr TensorView(T* ptr, Shape shape) noexcept : data_(ptr), shape_(shape) {}
+    TensorView() noexcept : data_(nullptr), shape_() {}
+    TensorView(T* ptr, Shape shape) noexcept : data_(ptr), shape_(std::move(shape)) {}
 
     [[nodiscard]] constexpr T* data() noexcept { return data_; }
     [[nodiscard]] constexpr const T* data() const noexcept { return data_; }
 
-    [[nodiscard]] constexpr const Shape& shape() const noexcept { return shape_; }
-    [[nodiscard]] constexpr int64_t numel() const noexcept { return shape_.numel(); }
-    [[nodiscard]] constexpr size_t bytes() const noexcept { return shape_.numel() * sizeof(T); }
+    [[nodiscard]] const Shape& shape() const noexcept { return shape_; }
+    [[nodiscard]] int64_t numel() const noexcept { return shape_.numel(); }
+    [[nodiscard]] size_t bytes() const noexcept { return shape_.numel() * sizeof(T); }
 
     [[nodiscard]] constexpr T& operator()(int64_t batch, int64_t channel, int64_t y, int64_t x) noexcept {
         assert(data_ != nullptr);

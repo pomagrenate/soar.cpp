@@ -18,7 +18,7 @@ public:
     int64_t h{1};
     int64_t w{1};
 
-    constexpr Shape() noexcept : dims_{} {}
+    Shape() noexcept : dims_{} {}
 
     Shape(int64_t n_, int64_t c_, int64_t h_, int64_t w_) noexcept
         : n(n_), c(c_), h(h_), w(w_), dims_{n_, c_, h_, w_} {}

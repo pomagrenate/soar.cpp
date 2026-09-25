@@ -19,7 +19,7 @@ Tensor::Tensor(const core::Shape& shape, bool requires_grad)
 Tensor::Tensor(const core::Shape& shape, std::span<const float> initial_data, bool requires_grad)
     : shape_(shape), requires_grad_(requires_grad) {
     compute_strides();
-    if (initial_data.size() != shape_.numel()) {
+    if (initial_data.size() != static_cast<size_t>(shape_.numel())) {
         throw ShapeError("Initial data size does not match tensor numel");
     }
     host_data_.assign(initial_data.begin(), initial_data.end());
@@ -153,7 +153,7 @@ void Tensor::backward(TensorPtr gradient) {
 }
 
 TensorPtr Tensor::reshape(const core::Shape& new_shape) {
-    if (new_shape.numel() != numel()) {
+    if (new_shape.numel() != static_cast<int64_t>(numel())) {
         throw ShapeError("Cannot reshape tensor: numel mismatch");
     }
     auto t = std::make_shared<Tensor>(new_shape, requires_grad_);

@@ -26,7 +26,7 @@ struct Conv2dNode : public AutogradNode {
         const float* x = input->data();
         const float* w = weight->data();
 
-        size_t B = 1;
+        [[maybe_unused]] size_t B = 1;
         size_t C_in = input->dim(0);
         size_t H_in = input->dim(1);
         size_t W_in = input->dim(2);

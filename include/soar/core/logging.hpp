@@ -1,8 +1,10 @@
 #pragma once
 
 #include <iostream>
+#include <string>
 #include <string_view>
-#include <format>
+#include <sstream>
+#include <cstdint>
 
 namespace soar::core {
 
@@ -19,11 +21,32 @@ LogLevel get_log_level() noexcept;
 
 void log_message(LogLevel level, std::string_view msg);
 
+namespace detail {
+template <typename T>
+inline void format_arg(std::ostringstream& oss, std::string_view fmt, size_t& pos, const T& arg) {
+    size_t next = fmt.find("{}", pos);
+    if (next != std::string_view::npos) {
+        oss << fmt.substr(pos, next - pos);
+        oss << arg;
+        pos = next + 2;
+    }
+}
+} // namespace detail
+
 template <typename... Args>
-void log(LogLevel level, std::format_string<Args...> fmt, Args&&... args) {
+inline void log(LogLevel level, std::string_view fmt, const Args&... args) {
     if (level < get_log_level()) return;
-    std::string s = std::format(fmt, std::forward<Args>(args)...);
-    log_message(level, s);
+    if constexpr (sizeof...(Args) == 0) {
+        log_message(level, fmt);
+    } else {
+        std::ostringstream oss;
+        size_t pos = 0;
+        (detail::format_arg(oss, fmt, pos, args), ...);
+        if (pos < fmt.size()) {
+            oss << fmt.substr(pos);
+        }
+        log_message(level, oss.str());
+    }
 }
 
 } // namespace soar::core

@@ -11,7 +11,7 @@
 
 namespace {
 
-bool float_near(float a, float b, float tol = 1e-4f) {
+[[maybe_unused]] bool float_near(float a, float b, float tol = 1e-4f) {
     float diff = std::fabs(a - b);
     return diff <= tol;
 }
