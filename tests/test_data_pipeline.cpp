@@ -105,6 +105,27 @@ void test_coco_dataset() {
         assert(sample.mask->dim(1) == 64 && sample.mask->dim(2) == 64);
         std::cout << "  mask pixel (20,20) = " << sample.mask->data()[20 * 64 + 20] << std::endl;
         assert(sample.mask->data()[20 * 64 + 20] == 1.0f);
+
+        // Test with string IDs as in MAGFiLO Kaggle dataset
+        std::string json_str_id_content = R"({
+            "images": [{"id": "magfilo_001", "file_name": "sample0_coco.bmp", "width": "64", "height": "64"}],
+            "annotations": [{
+                "id": "ann_001", "image_id": "magfilo_001", "category_id": "1",
+                "segmentation": [[10, 10, 40, 10, 40, 40, 10, 40]]
+            }]
+        })";
+        std::string json_str_id_path = "annotations_coco_str_id.json";
+        FILE* f_str_json = std::fopen(json_str_id_path.c_str(), "w");
+        if (f_str_json) {
+            std::fputs(json_str_id_content.c_str(), f_str_json);
+            std::fclose(f_str_json);
+        }
+
+        soar::data::COCODataset ds_str_id(".", json_str_id_path, 1);
+        assert(ds_str_id.size() == 1);
+        auto sample_str = ds_str_id.get_sample(0);
+        assert(sample_str.mask->data()[20 * 64 + 20] == 1.0f);
+        std::filesystem::remove(json_str_id_path);
     } catch (const std::exception& e) {
         std::cout << "[COCO EXC] " << e.what() << std::endl;
         assert(false);

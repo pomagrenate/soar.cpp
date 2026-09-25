@@ -70,6 +70,75 @@ COCODataset::COCODataset(const std::string& images_dir,
                   image_records_.size(), annotations_by_image_.size(), file_map_.size());
 }
 
+static std::string json_str_id(const nlohmann::json& obj, const std::string& key) {
+    if (!obj.contains(key)) return "";
+    const auto& v = obj[key];
+    if (v.is_string()) return v.get<std::string>();
+    if (v.is_number_integer()) return std::to_string(v.get<int64_t>());
+    if (v.is_number_unsigned()) return std::to_string(v.get<uint64_t>());
+    if (v.is_number_float()) return std::to_string(static_cast<int64_t>(v.get<double>()));
+    return "";
+}
+
+static uint64_t json_uint_id(const nlohmann::json& obj, const std::string& key, uint64_t def = 0) {
+    if (!obj.contains(key)) return def;
+    const auto& v = obj[key];
+    if (v.is_number_unsigned()) return v.get<uint64_t>();
+    if (v.is_number_integer()) return static_cast<uint64_t>(std::max(int64_t(0), v.get<int64_t>()));
+    if (v.is_number_float()) return static_cast<uint64_t>(std::max(0.0, v.get<double>()));
+    if (v.is_string()) {
+        try {
+            return std::stoull(v.get<std::string>());
+        } catch (...) {
+            return def;
+        }
+    }
+    return def;
+}
+
+static size_t json_size_val(const nlohmann::json& obj, const std::string& key, size_t def = 0) {
+    if (!obj.contains(key)) return def;
+    const auto& v = obj[key];
+    if (v.is_number_unsigned()) return v.get<size_t>();
+    if (v.is_number_integer()) return static_cast<size_t>(std::max(int64_t(0), v.get<int64_t>()));
+    if (v.is_number_float()) return static_cast<size_t>(std::max(0.0, v.get<double>()));
+    if (v.is_string()) {
+        try {
+            return std::stoull(v.get<std::string>());
+        } catch (...) {
+            return def;
+        }
+    }
+    return def;
+}
+
+static int json_int_val(const nlohmann::json& obj, const std::string& key, int def = 0) {
+    if (!obj.contains(key)) return def;
+    const auto& v = obj[key];
+    if (v.is_number_integer()) return v.get<int>();
+    if (v.is_number_unsigned()) return static_cast<int>(v.get<unsigned int>());
+    if (v.is_string()) {
+        try {
+            return std::stoi(v.get<std::string>());
+        } catch (...) {
+            return def;
+        }
+    }
+    return def;
+}
+
+static float json_to_float(const nlohmann::json& v, float def = 0.0f) {
+    if (v.is_number()) return v.get<float>();
+    if (v.is_string()) {
+        try {
+            return std::stof(v.get<std::string>());
+        } catch (...) {
+            return def;
+        }
+    }
+    return def;
+}
+
 void COCODataset::parse_json(const std::string& json_path) {
     FILE* in = std::fopen(json_path.c_str(), "rb");
     if (!in) {
@@ -92,13 +161,24 @@ void COCODataset::parse_json(const std::string& json_path) {
         throw DeviceError("Failed to parse COCO annotation JSON file: " + json_path);
     }
 
+    std::unordered_map<std::string, std::string> id_to_filename;
+
     if (j.contains("images") && j["images"].is_array()) {
         for (const auto& img : j["images"]) {
             ImageRecord rec;
-            rec.id = img.value("id", uint64_t(0));
+            rec.str_id = json_str_id(img, "id");
+            rec.id = json_uint_id(img, "id");
             rec.file_name = img.value("file_name", "");
-            rec.height = img.value("height", size_t(0));
-            rec.width = img.value("width", size_t(0));
+            rec.height = json_size_val(img, "height");
+            rec.width = json_size_val(img, "width");
+
+            if (!rec.str_id.empty()) {
+                id_to_filename[rec.str_id] = rec.file_name;
+            }
+            if (rec.id != 0) {
+                id_to_filename[std::to_string(rec.id)] = rec.file_name;
+            }
+
             image_records_.push_back(std::move(rec));
         }
     }
@@ -106,21 +186,47 @@ void COCODataset::parse_json(const std::string& json_path) {
     if (j.contains("annotations") && j["annotations"].is_array()) {
         for (const auto& ann : j["annotations"]) {
             AnnotationRecord rec;
-            rec.image_id = ann.value("image_id", uint64_t(0));
-            rec.category_id = ann.value("category_id", 0);
+            rec.image_id_str = json_str_id(ann, "image_id");
+            rec.image_id = json_uint_id(ann, "image_id");
+            rec.category_id = json_int_val(ann, "category_id", 0);
 
             if (ann.contains("segmentation") && ann["segmentation"].is_array()) {
                 for (const auto& poly : ann["segmentation"]) {
                     if (poly.is_array()) {
                         std::vector<float> coords;
+                        coords.reserve(poly.size());
                         for (const auto& coord : poly) {
-                            coords.push_back(coord.get<float>());
+                            coords.push_back(json_to_float(coord));
                         }
-                        rec.polygons.push_back(std::move(coords));
+                        if (coords.size() >= 6) {
+                            rec.polygons.push_back(std::move(coords));
+                        }
                     }
                 }
             }
-            annotations_by_image_[rec.image_id].push_back(std::move(rec));
+
+            if (rec.image_id != 0) {
+                annotations_by_image_[rec.image_id].push_back(rec);
+            }
+
+            std::string resolved_fname;
+            if (!rec.image_id_str.empty()) {
+                annotations_by_key_[rec.image_id_str].push_back(rec);
+                auto it = id_to_filename.find(rec.image_id_str);
+                if (it != id_to_filename.end()) resolved_fname = it->second;
+            }
+            if (resolved_fname.empty() && rec.image_id != 0) {
+                auto it = id_to_filename.find(std::to_string(rec.image_id));
+                if (it != id_to_filename.end()) resolved_fname = it->second;
+            }
+
+            if (!resolved_fname.empty()) {
+                annotations_by_key_[resolved_fname].push_back(rec);
+                std::string bname = fs::path(resolved_fname).filename().generic_string();
+                std::string stem = fs::path(resolved_fname).stem().generic_string();
+                if (bname != resolved_fname) annotations_by_key_[bname].push_back(rec);
+                if (stem != resolved_fname && stem != bname) annotations_by_key_[stem].push_back(rec);
+            }
         }
     }
 }
@@ -182,9 +288,31 @@ DatasetSample COCODataset::get_sample(size_t index) const {
     sample.mask = Tensor::zeros({1, static_cast<int64_t>(H), static_cast<int64_t>(W)});
     float* mask_data = sample.mask->data();
 
-    auto it = annotations_by_image_.find(rec.id);
-    if (it != annotations_by_image_.end()) {
-        for (const auto& ann : it->second) {
+    const std::vector<AnnotationRecord>* matched_anns = nullptr;
+    auto it_key = annotations_by_key_.find(rec.file_name);
+    if (it_key != annotations_by_key_.end()) {
+        matched_anns = &it_key->second;
+    } else {
+        std::string bname = fs::path(rec.file_name).filename().generic_string();
+        it_key = annotations_by_key_.find(bname);
+        if (it_key != annotations_by_key_.end()) {
+            matched_anns = &it_key->second;
+        } else {
+            std::string stem = fs::path(rec.file_name).stem().generic_string();
+            it_key = annotations_by_key_.find(stem);
+            if (it_key != annotations_by_key_.end()) {
+                matched_anns = &it_key->second;
+            } else if (!rec.str_id.empty()) {
+                it_key = annotations_by_key_.find(rec.str_id);
+                if (it_key != annotations_by_key_.end()) {
+                    matched_anns = &it_key->second;
+                }
+            }
+        }
+    }
+
+    if (matched_anns) {
+        for (const auto& ann : *matched_anns) {
             for (const auto& poly_coords : ann.polygons) {
                 if (poly_coords.size() < 6) continue;
                 std::vector<Point2D> pts;
@@ -193,6 +321,21 @@ DatasetSample COCODataset::get_sample(size_t index) const {
                     pts.push_back(Point2D{poly_coords[i], poly_coords[i + 1]});
                 }
                 PolygonRasterizer::rasterize(mask_data, H, W, pts, 1.0f);
+            }
+        }
+    } else {
+        auto it = annotations_by_image_.find(rec.id);
+        if (it != annotations_by_image_.end()) {
+            for (const auto& ann : it->second) {
+                for (const auto& poly_coords : ann.polygons) {
+                    if (poly_coords.size() < 6) continue;
+                    std::vector<Point2D> pts;
+                    pts.reserve(poly_coords.size() / 2);
+                    for (size_t i = 0; i + 1 < poly_coords.size(); i += 2) {
+                        pts.push_back(Point2D{poly_coords[i], poly_coords[i + 1]});
+                    }
+                    PolygonRasterizer::rasterize(mask_data, H, W, pts, 1.0f);
+                }
             }
         }
     }

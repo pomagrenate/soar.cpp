@@ -34,6 +34,7 @@ public:
 private:
     struct ImageRecord {
         uint64_t id{0};
+        std::string str_id;
         std::string file_name;
         size_t height{0};
         size_t width{0};
@@ -41,6 +42,7 @@ private:
 
     struct AnnotationRecord {
         uint64_t image_id{0};
+        std::string image_id_str;
         int category_id{0};
         std::vector<std::vector<float>> polygons;
     };
@@ -52,6 +54,7 @@ private:
 
     std::vector<ImageRecord> image_records_;
     std::map<uint64_t, std::vector<AnnotationRecord>> annotations_by_image_;
+    std::unordered_map<std::string, std::vector<AnnotationRecord>> annotations_by_key_;
     std::unordered_map<std::string, std::string> file_map_;
 
     void parse_json(const std::string& json_path);
