@@ -8,7 +8,7 @@ Predictor::Predictor(std::shared_ptr<nn::SOARModel> model, float threshold)
     : model_(std::move(model)), threshold_(threshold) {}
 
 std::string Predictor::encode_rle(const uint8_t* mask, size_t height, size_t width) {
-    // Fortran-order (column-major) Kaggle RLE
+    // Fortran-order (column-major) RLE
     std::ostringstream ss;
     bool in_run = false;
     size_t run_start = 0;

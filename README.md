@@ -9,7 +9,7 @@ A dedicated, standalone C++20 / Vulkan Compute scientific semantic segmentation 
 3. **Deterministic Memory Sub-Allocation via `palloc`**: Custom low-level memory allocator managing Host/Staging arenas and sub-allocating Vulkan VRAM for strict $O(1)$ allocation resets with zero dynamic memory allocation jitter during training or inference.
 4. **Strict Native Resolution ($2048 \times 2048$) Preservation**: Direct high-resolution feature preservation without lossy downsampling, built with GroupNorm for normalization stability on single-sample batches.
 5. **Universal Dataset Support**: Native C++ COCO polygon JSON parser, YOLO segmentation text format parser, and scanline polygon rasterization.
-6. **Unified kaggle/Scientific Export**: Direct Fortran-order 1-indexed Run-Length Encoding (RLE) generation and 24-bit uncompressed BMP visualization export.
+6. **Unified Scientific Export**: Direct 1-indexed Run-Length Encoding (RLE) generation and 24-bit uncompressed BMP visualization export.
 7. **Zero-Overhead Python Wrapper**: Lightweight Python ctypes bindings (`import soar`) and unified CLI (`cli.py` / `soar.bat` / `./soar.sh`) delegating to the native C++ engine.
 
 ---
@@ -141,37 +141,34 @@ Train natively in C++ on COCO or YOLO datasets:
 # Using native CLI
 ./soar.bat train \
     --model configs/models/soar_nano1.yaml \
-    --data /kaggle/input/competitions/filament-segmentation-2026/MAGFiLO_1.0_Kaggle_2026 \
-    --annotation-file /kaggle/input/competitions/filament-segmentation-2026/MAGFiLO_1.0_Kaggle_2026/train/MAGFiLO_1.0_Annotations_kaggle2026_train.json \
-    --format coco \
-    --img-size 2048 2048 \
+    --data data/dataset \
+    --annotation-file data/dataset/annotations.json \
+    --data-format coco \
     --epochs 50 \
-    --lr 1e-3 \
+    --lr 1e-4 \
     --checkpoint-dir checkpoints
 
 # Using Python CLI wrapper
 python cli.py train \
     --model configs/models/soar_nano1.yaml \
-    --data /kaggle/input/competitions/filament-segmentation-2026/MAGFiLO_1.0_Kaggle_2026 \
-    --annotation-file /kaggle/input/competitions/filament-segmentation-2026/MAGFiLO_1.0_Kaggle_2026/train/MAGFiLO_1.0_Annotations_kaggle2026_train.json \
+    --data data/dataset \
+    --annotation-file data/dataset/annotations.json \
     --format coco \
-    --img-size 2048 2048 \
     --epochs 50 \
-    --lr 1e-3 \
+    --lr 1e-4 \
     --checkpoint-dir checkpoints
 ```
 
-### 2. High-Resolution Prediction & RLE Generation
+### 2. High-Resolution Prediction & Mask Generation
 
-Run inference on high-resolution images, generating Kaggle-ready submission RLE CSV files:
+Run inference on high-resolution images, generating prediction masks and RLE strings:
 
 ```bash
 ./soar.bat predict \
     --weights checkpoints/best.soar \
-    --input test_images/sample.jpg \
-    --output-csv submission.csv \
-    --threshold 0.5 \
-    --img-size 2048 2048
+    --input test_images/sample.bmp \
+    --output predictions/sample_mask.bmp \
+    --threshold 0.5
 ```
 
 ### 3. Hardware Benchmark

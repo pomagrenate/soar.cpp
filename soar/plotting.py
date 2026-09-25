@@ -12,7 +12,7 @@ import numpy as np
 
 try:
     import matplotlib
-    matplotlib.use("Agg")  # Non-interactive backend suitable for Kaggle/headless
+    matplotlib.use("Agg")  # Non-interactive backend suitable for headless environments
     import matplotlib.pyplot as plt
     from matplotlib.patches import FancyBboxPatch
     import matplotlib.patheffects as PathEffects

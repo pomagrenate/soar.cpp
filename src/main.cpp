@@ -529,7 +529,7 @@ int main(int argc, char* argv[]) {
             auto res = predictor.predict(input_img);
 
             std::cout << "[SOAR Engine] Inference completed! Foreground pixels: " << res.foreground_pixels << std::endl;
-            std::cout << "[SOAR Engine] Kaggle Fortran RLE length: " << res.rle_string.size() << " characters." << std::endl;
+            std::cout << "[SOAR Engine] Fortran RLE length: " << res.rle_string.size() << " characters." << std::endl;
 
             std::string out_mask = output_path.empty() ? "output_mask.bmp" : output_path;
             if (output_format == "rle") {
