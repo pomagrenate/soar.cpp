@@ -38,18 +38,34 @@ void YOLODataset::scan_directory() {
     std::sort(image_files_.begin(), image_files_.end());
 }
 
+static std::string join_paths(const std::string& base, const std::string& sub) {
+    if (base.empty() || base == ".") return sub;
+    if (base.back() == '/' || base.back() == '\\') return base + sub;
+    return base + "/" + sub;
+}
+
+static std::string get_stem(const std::string& filename) {
+    size_t last_slash = filename.find_last_of("/\\");
+    std::string base = (last_slash == std::string::npos) ? filename : filename.substr(last_slash + 1);
+    size_t last_dot = base.rfind('.');
+    if (last_dot != std::string::npos) {
+        return base.substr(0, last_dot);
+    }
+    return base;
+}
+
 DatasetSample YOLODataset::get_sample(size_t index) const {
     if (index >= image_files_.size()) {
         throw ShapeError("YOLODataset sample index out of range: " + std::to_string(index));
     }
 
     std::string filename = image_files_[index];
-    std::filesystem::path img_path = std::filesystem::path(images_dir_) / filename;
+    std::string img_path_str = join_paths(images_dir_, filename);
 
     DatasetSample sample;
     sample.filename = filename;
     sample.image_id = index;
-    sample.image = ImageIO::load(img_path.string(), desired_channels_);
+    sample.image = ImageIO::load(img_path_str, desired_channels_);
 
     size_t H = sample.image->dim(1);
     size_t W = sample.image->dim(2);
@@ -60,27 +76,34 @@ DatasetSample YOLODataset::get_sample(size_t index) const {
     float* mask_data = sample.mask->data();
 
     // Find label txt file with matching stem
-    std::filesystem::path stem = std::filesystem::path(filename).stem();
-    std::filesystem::path txt_path = std::filesystem::path(labels_dir_) / (stem.string() + ".txt");
+    std::string stem = get_stem(filename);
+    std::string txt_path_str = join_paths(labels_dir_, stem + ".txt");
 
-    if (std::filesystem::exists(txt_path)) {
-        std::ifstream in(txt_path);
-        std::string line;
-        while (std::getline(in, line)) {
-            if (line.empty()) continue;
-            std::istringstream iss(line);
-            int class_id = 0;
-            if (!(iss >> class_id)) continue;
+    FILE* in = std::fopen(txt_path_str.c_str(), "r");
+    if (in) {
+        char line[4096];
+        while (std::fgets(line, sizeof(line), in)) {
+            char* ptr = line;
+            char* end = nullptr;
+            [[maybe_unused]] long class_id = std::strtol(ptr, &end, 10);
+            if (end == ptr) continue;
+            ptr = end;
 
             std::vector<Point2D> pts;
-            float norm_x = 0, norm_y = 0;
-            while (iss >> norm_x >> norm_y) {
+            while (*ptr != '\0' && *ptr != '\n' && *ptr != '\r') {
+                float norm_x = std::strtof(ptr, &end);
+                if (end == ptr) break;
+                ptr = end;
+                float norm_y = std::strtof(ptr, &end);
+                if (end == ptr) break;
+                ptr = end;
                 pts.push_back(Point2D{norm_x * static_cast<float>(W), norm_y * static_cast<float>(H)});
             }
             if (pts.size() >= 3) {
                 PolygonRasterizer::rasterize(mask_data, H, W, pts, 1.0f);
             }
         }
+        std::fclose(in);
     }
 
     if (target_height_ > 0 && target_width_ > 0 && (target_height_ != H || target_width_ != W)) {

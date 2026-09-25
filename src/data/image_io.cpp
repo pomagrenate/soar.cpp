@@ -1,6 +1,10 @@
 #include <soar/data/image_io.hpp>
 #include <soar/core/logging.hpp>
 
+#include "palloc.h"
+#define STBI_MALLOC(sz) ::pa_malloc(sz)
+#define STBI_REALLOC(p,newsz) ::pa_realloc(p,newsz)
+#define STBI_FREE(p) ::pa_free(p)
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
 
@@ -98,11 +102,11 @@ bool ImageIO::save_bmp(const std::string& path, const TensorPtr& tensor) {
         0, 0, 0, 0
     };
 
-    std::ofstream out(path, std::ios::binary);
-    if (!out.is_open()) return false;
+    FILE* out = std::fopen(path.c_str(), "wb");
+    if (!out) return false;
 
-    out.write(reinterpret_cast<const char*>(file_header), 14);
-    out.write(reinterpret_cast<const char*>(info_header), 40);
+    std::fwrite(file_header, 1, 14, out);
+    std::fwrite(info_header, 1, 40, out);
 
     const float* tensor_data = tensor->data();
     std::vector<uint8_t> row(row_padded, 0);
@@ -127,8 +131,9 @@ bool ImageIO::save_bmp(const std::string& path, const TensorPtr& tensor) {
             row[x * 3 + 1] = g;
             row[x * 3 + 2] = r;
         }
-        out.write(reinterpret_cast<const char*>(row.data()), row_padded);
+        std::fwrite(row.data(), 1, row_padded, out);
     }
+    std::fclose(out);
 
     return true;
 }
@@ -181,11 +186,11 @@ bool ImageIO::save_comparison_bmp(const std::string& path,
         0, 0, 0, 0
     };
 
-    std::ofstream out(path, std::ios::binary);
-    if (!out.is_open()) return false;
+    FILE* out = std::fopen(path.c_str(), "wb");
+    if (!out) return false;
 
-    out.write(reinterpret_cast<const char*>(file_header), 14);
-    out.write(reinterpret_cast<const char*>(info_header), 40);
+    std::fwrite(file_header, 1, 14, out);
+    std::fwrite(info_header, 1, 40, out);
 
     const float* img_d = image->data();
     const float* tm_d = true_mask->data();
@@ -256,8 +261,9 @@ bool ImageIO::save_comparison_bmp(const std::string& path,
             row[p3_x * 3 + 1] = er_g;
             row[p3_x * 3 + 2] = er_r;
         }
-        out.write(reinterpret_cast<const char*>(row.data()), row_padded);
+        std::fwrite(row.data(), 1, row_padded, out);
     }
+    std::fclose(out);
 
     return true;
 }

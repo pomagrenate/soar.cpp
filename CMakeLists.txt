@@ -56,12 +56,15 @@ if(NOT MSVC)
     target_compile_options(palloc_static PRIVATE -Wno-attributes -Wno-unused-variable -Wno-type-limits)
 endif()
 
+find_package(OpenMP)
+
 # Core SOAR library sources
 set(SOAR_SOURCES
     src/core/logging.cpp
     src/core/shape.cpp
     src/core/config_parser.cpp
     src/memory/palloc_bridge.cpp
+    src/memory/palloc_override.cpp
     src/memory/host_arena.cpp
     src/memory/device_slab.cpp
     src/vulkan/dynamic_loader.cpp
@@ -78,13 +81,19 @@ set(SOAR_SOURCES
     src/data/image_io.cpp
     src/data/coco_dataset.cpp
     src/data/yolo_dataset.cpp
+    src/data/preprocess.cpp
+    src/utils/metrics.cpp
     src/engine/trainer.cpp
+    src/engine/validator.cpp
     src/engine/predictor.cpp
     src/api/c_api.cpp
 )
 
 add_library(soar_core STATIC ${SOAR_SOURCES})
 target_link_libraries(soar_core PUBLIC palloc_static)
+if(OpenMP_CXX_FOUND)
+    target_link_libraries(soar_core PUBLIC OpenMP::OpenMP_CXX)
+endif()
 if(UNIX AND NOT APPLE)
     target_link_libraries(soar_core PUBLIC dl)
 endif()
@@ -96,6 +105,9 @@ target_include_directories(soar_core PUBLIC
 # Shared dynamic library for C-ABI / Python bindings
 add_library(soar_engine_shared SHARED ${SOAR_SOURCES})
 target_link_libraries(soar_engine_shared PUBLIC palloc_static)
+if(OpenMP_CXX_FOUND)
+    target_link_libraries(soar_engine_shared PUBLIC OpenMP::OpenMP_CXX)
+endif()
 if(UNIX AND NOT APPLE)
     target_link_libraries(soar_engine_shared PUBLIC dl)
 endif()
@@ -132,3 +144,12 @@ add_test(NAME test_full_engine COMMAND test_full_engine)
 add_executable(test_data_pipeline tests/test_data_pipeline.cpp)
 target_link_libraries(test_data_pipeline PRIVATE soar_core)
 add_test(NAME test_data_pipeline COMMAND test_data_pipeline)
+
+add_executable(test_losses tests/test_losses.cpp)
+target_link_libraries(test_losses PRIVATE soar_core)
+add_test(NAME test_losses COMMAND test_losses)
+
+add_executable(test_metrics_preprocess tests/test_metrics_preprocess.cpp)
+target_link_libraries(test_metrics_preprocess PRIVATE soar_core)
+add_test(NAME test_metrics_preprocess COMMAND test_metrics_preprocess)
+

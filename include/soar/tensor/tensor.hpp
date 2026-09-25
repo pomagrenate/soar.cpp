@@ -6,6 +6,8 @@
 #include <soar/vulkan/context.hpp>
 #include <soar/vulkan/buffer.hpp>
 
+#include <soar/memory/palloc_allocator.hpp>
+#include <soar/autograd/node.hpp>
 #include <vector>
 #include <memory>
 #include <string>
@@ -39,7 +41,7 @@ public:
 
     // Shape and Layout
     [[nodiscard]] const core::Shape& shape() const noexcept { return shape_; }
-    [[nodiscard]] const std::vector<size_t>& strides() const noexcept { return strides_; }
+    [[nodiscard]] const memory::PallocVector<size_t>& strides() const noexcept { return strides_; }
     [[nodiscard]] size_t ndim() const noexcept { return shape_.ndim(); }
     [[nodiscard]] size_t dim(size_t index) const { return shape_[index]; }
     [[nodiscard]] size_t numel() const noexcept { return shape_.numel(); }
@@ -78,7 +80,7 @@ public:
     void fill_(float val);
 
     // Autograd
-    [[nodiscard]] bool requires_grad() const noexcept { return requires_grad_; }
+    [[nodiscard]] bool requires_grad() const noexcept { return GradMode::is_enabled() && requires_grad_; }
     void set_requires_grad(bool req) noexcept { requires_grad_ = req; }
 
     [[nodiscard]] TensorPtr grad() const noexcept { return grad_; }
@@ -88,7 +90,11 @@ public:
     void add_grad(const TensorPtr& incoming);
 
     [[nodiscard]] std::shared_ptr<AutogradNode> grad_fn() const noexcept { return grad_fn_; }
-    void set_grad_fn(std::shared_ptr<AutogradNode> fn) noexcept { grad_fn_ = std::move(fn); }
+    void set_grad_fn(std::shared_ptr<AutogradNode> fn) noexcept {
+        if (GradMode::is_enabled()) {
+            grad_fn_ = std::move(fn);
+        }
+    }
 
     void backward(TensorPtr gradient = nullptr);
 
@@ -100,8 +106,8 @@ private:
     void compute_strides();
 
     core::Shape shape_{};
-    std::vector<size_t> strides_{};
-    std::vector<float> host_data_{};
+    memory::PallocVector<size_t> strides_{};
+    memory::PallocVector<float> host_data_{};
 
     bool on_device_{false};
     std::shared_ptr<vk::VulkanBuffer> device_buffer_{nullptr};

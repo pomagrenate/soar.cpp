@@ -125,4 +125,61 @@ private:
     std::shared_ptr<PixelShuffle> shuffle_;
 };
 
+/**
+ * @brief Standard Bottleneck block matching YOLO/segres.
+ */
+class Bottleneck : public Module {
+public:
+    Bottleneck(size_t c1, size_t c2, bool shortcut = true, size_t g = 1, size_t k = 3, float e = 0.5f);
+    TensorPtr forward(const TensorPtr& input) override;
+
+private:
+    bool add_;
+    std::shared_ptr<CBA> cv1_;
+    std::shared_ptr<CBA> cv2_;
+};
+
+/**
+ * @brief CSP bottleneck block (C3k2) matching YOLO/segres.
+ */
+class C3k2 : public Module {
+public:
+    C3k2(size_t c1, size_t c2, size_t n = 1, bool shortcut = true, size_t g = 1, float e = 0.5f);
+    TensorPtr forward(const TensorPtr& input) override;
+
+private:
+    std::shared_ptr<CBA> cv1_;
+    std::shared_ptr<CBA> cv2_;
+    std::shared_ptr<CBA> cv3_;
+    std::vector<std::shared_ptr<Bottleneck>> m_;
+};
+
+/**
+ * @brief Spatial Pyramid Pooling - Fast (SPPF).
+ */
+class SPPF : public Module {
+public:
+    SPPF(size_t c1, size_t c2, size_t k = 5);
+    TensorPtr forward(const TensorPtr& input) override;
+
+private:
+    std::shared_ptr<CBA> cv1_;
+    std::shared_ptr<CBA> cv2_;
+    std::shared_ptr<MaxPool2d> m_;
+};
+
+/**
+ * @brief Multi-tensor channel concatenation module.
+ */
+class Concat : public Module {
+public:
+    explicit Concat(size_t dimension = 1) : Module("Concat"), dim_(dimension) {}
+    TensorPtr forward(const std::vector<TensorPtr>& inputs);
+    TensorPtr forward(const TensorPtr& input) override { return input; }
+
+private:
+    size_t dim_{1};
+};
+
 } // namespace soar::nn
+

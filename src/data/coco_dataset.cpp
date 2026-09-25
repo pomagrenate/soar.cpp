@@ -23,13 +23,26 @@ COCODataset::COCODataset(const std::string& images_dir,
 }
 
 void COCODataset::parse_json(const std::string& json_path) {
-    std::ifstream in(json_path);
-    if (!in.is_open()) {
+    FILE* in = std::fopen(json_path.c_str(), "rb");
+    if (!in) {
         throw DeviceError("Failed to open COCO annotation JSON file: " + json_path);
     }
+    std::fseek(in, 0, SEEK_END);
+    long sz = std::ftell(in);
+    std::fseek(in, 0, SEEK_SET);
 
-    nlohmann::json j;
-    in >> j;
+    std::string content;
+    if (sz > 0) {
+        content.resize(static_cast<size_t>(sz));
+        size_t read_bytes = std::fread(content.data(), 1, sz, in);
+        content.resize(read_bytes);
+    }
+    std::fclose(in);
+
+    nlohmann::json j = nlohmann::json::parse(content, nullptr, false);
+    if (j.is_discarded()) {
+        throw DeviceError("Failed to parse COCO annotation JSON file: " + json_path);
+    }
 
     if (j.contains("images") && j["images"].is_array()) {
         for (const auto& img : j["images"]) {
@@ -70,12 +83,19 @@ DatasetSample COCODataset::get_sample(size_t index) const {
     }
 
     const auto& rec = image_records_[index];
-    std::filesystem::path img_path = std::filesystem::path(images_dir_) / rec.file_name;
+    std::string img_path;
+    if (images_dir_.empty() || images_dir_ == ".") {
+        img_path = rec.file_name;
+    } else if (images_dir_.back() == '/' || images_dir_.back() == '\\') {
+        img_path = images_dir_ + rec.file_name;
+    } else {
+        img_path = images_dir_ + "/" + rec.file_name;
+    }
 
     DatasetSample sample;
     sample.filename = rec.file_name;
     sample.image_id = rec.id;
-    sample.image = ImageIO::load(img_path.string(), desired_channels_);
+    sample.image = ImageIO::load(img_path, desired_channels_);
 
     size_t H = sample.image->dim(1);
     size_t W = sample.image->dim(2);

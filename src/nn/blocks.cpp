@@ -14,15 +14,17 @@ namespace soar::nn {
 struct AddNode : public AutogradNode {
     TensorPtr a;
     TensorPtr b;
+
+    std::vector<std::shared_ptr<AutogradNode>> get_inputs() const override {
+        std::vector<std::shared_ptr<AutogradNode>> res;
+        if (a && a->grad_fn()) res.push_back(a->grad_fn());
+        if (b && b->grad_fn()) res.push_back(b->grad_fn());
+        return res;
+    }
+
     void backward(const TensorPtr& grad_output) override {
-        if (a && a->requires_grad()) {
-            accumulate_grad(a->grad(), grad_output);
-            if (a->grad_fn()) a->grad_fn()->backward(grad_output);
-        }
-        if (b && b->requires_grad()) {
-            accumulate_grad(b->grad(), grad_output);
-            if (b->grad_fn()) b->grad_fn()->backward(grad_output);
-        }
+        if (a) propagate_grad(a, grad_output);
+        if (b) propagate_grad(b, grad_output);
     }
 };
 
@@ -50,6 +52,14 @@ TensorPtr add_tensors(const TensorPtr& a, const TensorPtr& b) {
 struct MulBroadcastNode : public AutogradNode {
     TensorPtr a; // [C, H, W]
     TensorPtr b; // [C, 1, 1]
+
+    std::vector<std::shared_ptr<AutogradNode>> get_inputs() const override {
+        std::vector<std::shared_ptr<AutogradNode>> res;
+        if (a && a->grad_fn()) res.push_back(a->grad_fn());
+        if (b && b->grad_fn()) res.push_back(b->grad_fn());
+        return res;
+    }
+
     void backward(const TensorPtr& grad_output) override {
         size_t C = a->dim(0);
         size_t H = a->dim(1);
@@ -67,8 +77,7 @@ struct MulBroadcastNode : public AutogradNode {
                     ga[c * (H * W) + sp] = go[c * (H * W) + sp] * b_val;
                 }
             }
-            accumulate_grad(a->grad(), grad_a);
-            if (a->grad_fn()) a->grad_fn()->backward(grad_a);
+            propagate_grad(a, grad_a);
         }
 
         if (b->requires_grad()) {
@@ -81,8 +90,7 @@ struct MulBroadcastNode : public AutogradNode {
                 }
                 gb[c] = sum;
             }
-            accumulate_grad(b->grad(), grad_b);
-            if (b->grad_fn()) b->grad_fn()->backward(grad_b);
+            propagate_grad(b, grad_b);
         }
     }
 };
@@ -125,6 +133,15 @@ struct ConvexNode : public AutogradNode {
     TensorPtr g;
     TensorPtr a;
     TensorPtr b;
+
+    std::vector<std::shared_ptr<AutogradNode>> get_inputs() const override {
+        std::vector<std::shared_ptr<AutogradNode>> res;
+        if (g && g->grad_fn()) res.push_back(g->grad_fn());
+        if (a && a->grad_fn()) res.push_back(a->grad_fn());
+        if (b && b->grad_fn()) res.push_back(b->grad_fn());
+        return res;
+    }
+
     void backward(const TensorPtr& grad_output) override {
         const float* go = grad_output->data();
         const float* p_g = g->data();
@@ -136,22 +153,19 @@ struct ConvexNode : public AutogradNode {
             TensorPtr grad_a = Tensor::zeros(a->shape());
             float* ga = grad_a->data();
             for (size_t i = 0; i < n; ++i) ga[i] = go[i] * p_g[i];
-            accumulate_grad(a->grad(), grad_a);
-            if (a->grad_fn()) a->grad_fn()->backward(grad_a);
+            propagate_grad(a, grad_a);
         }
         if (b->requires_grad()) {
             TensorPtr grad_b = Tensor::zeros(b->shape());
             float* gb = grad_b->data();
             for (size_t i = 0; i < n; ++i) gb[i] = go[i] * (1.0f - p_g[i]);
-            accumulate_grad(b->grad(), grad_b);
-            if (b->grad_fn()) b->grad_fn()->backward(grad_b);
+            propagate_grad(b, grad_b);
         }
         if (g->requires_grad()) {
             TensorPtr grad_g = Tensor::zeros(g->shape());
             float* gg = grad_g->data();
             for (size_t i = 0; i < n; ++i) gg[i] = go[i] * (p_a[i] - p_b[i]);
-            accumulate_grad(g->grad(), grad_g);
-            if (g->grad_fn()) g->grad_fn()->backward(grad_g);
+            propagate_grad(g, grad_g);
         }
     }
 };
@@ -180,6 +194,15 @@ TensorPtr convex_combination(const TensorPtr& g, const TensorPtr& a, const Tenso
 
 struct ConcatNode : public AutogradNode {
     std::vector<TensorPtr> inputs;
+
+    std::vector<std::shared_ptr<AutogradNode>> get_inputs() const override {
+        std::vector<std::shared_ptr<AutogradNode>> res;
+        for (const auto& inp : inputs) {
+            if (inp && inp->grad_fn()) res.push_back(inp->grad_fn());
+        }
+        return res;
+    }
+
     void backward(const TensorPtr& grad_output) override {
         const float* go = grad_output->data();
         size_t H = inputs[0]->dim(1);
@@ -194,8 +217,7 @@ struct ConcatNode : public AutogradNode {
                 for (size_t c = 0; c < c_curr; ++c) {
                     std::memcpy(gi + c * (H * W), go + (c_offset + c) * (H * W), H * W * sizeof(float));
                 }
-                accumulate_grad(inp->grad(), grad_i);
-                if (inp->grad_fn()) inp->grad_fn()->backward(grad_i);
+                propagate_grad(inp, grad_i);
             }
             c_offset += c_curr;
         }
@@ -425,6 +447,83 @@ SegHead::SegHead(size_t c1, size_t nc, size_t mid, size_t r, float prior)
 
 TensorPtr SegHead::forward(const TensorPtr& input) {
     return shuffle_->forward(pred_->forward(refine_pw_->forward(refine_dw_->forward(input))));
+}
+
+// -------------------------------------------------------------
+// Bottleneck Implementation
+// -------------------------------------------------------------
+Bottleneck::Bottleneck(size_t c1, size_t c2, bool shortcut, size_t g, size_t k, float e)
+    : Module("Bottleneck"), add_(shortcut && c1 == c2) {
+    size_t c_ = static_cast<size_t>(static_cast<float>(c2) * e);
+    cv1_ = std::make_shared<CBA>(c1, c_, k, 1);
+    cv2_ = std::make_shared<CBA>(c_, c2, k, 1, -1, 1, g);
+    register_submodule("cv1", cv1_);
+    register_submodule("cv2", cv2_);
+}
+
+TensorPtr Bottleneck::forward(const TensorPtr& input) {
+    TensorPtr out = cv2_->forward(cv1_->forward(input));
+    return add_ ? add_tensors(input, out) : out;
+}
+
+// -------------------------------------------------------------
+// C3k2 Implementation
+// -------------------------------------------------------------
+C3k2::C3k2(size_t c1, size_t c2, size_t n, bool shortcut, size_t g, float e)
+    : Module("C3k2") {
+    size_t c_ = static_cast<size_t>(static_cast<float>(c2) * e);
+    cv1_ = std::make_shared<CBA>(c1, c_, 1, 1);
+    cv2_ = std::make_shared<CBA>(c1, c_, 1, 1);
+    cv3_ = std::make_shared<CBA>(2 * c_, c2, 1, 1);
+
+    register_submodule("cv1", cv1_);
+    register_submodule("cv2", cv2_);
+    register_submodule("cv3", cv3_);
+
+    for (size_t i = 0; i < n; ++i) {
+        auto b = std::make_shared<Bottleneck>(c_, c_, shortcut, g, 3, 1.0f);
+        register_submodule("m_" + std::to_string(i), b);
+        m_.push_back(b);
+    }
+}
+
+TensorPtr C3k2::forward(const TensorPtr& input) {
+    TensorPtr y1 = cv1_->forward(input);
+    for (auto& b : m_) {
+        y1 = b->forward(y1);
+    }
+    TensorPtr y2 = cv2_->forward(input);
+    return cv3_->forward(concat_channels({y1, y2}));
+}
+
+// -------------------------------------------------------------
+// SPPF Implementation
+// -------------------------------------------------------------
+SPPF::SPPF(size_t c1, size_t c2, size_t k)
+    : Module("SPPF") {
+    size_t c_ = c1 / 2;
+    cv1_ = std::make_shared<CBA>(c1, c_, 1, 1);
+    cv2_ = std::make_shared<CBA>(c_ * 4, c2, 1, 1);
+    m_ = std::make_shared<MaxPool2d>(k, 1, k / 2);
+
+    register_submodule("cv1", cv1_);
+    register_submodule("cv2", cv2_);
+    register_submodule("m", m_);
+}
+
+TensorPtr SPPF::forward(const TensorPtr& input) {
+    TensorPtr x = cv1_->forward(input);
+    TensorPtr y1 = m_->forward(x);
+    TensorPtr y2 = m_->forward(y1);
+    TensorPtr y3 = m_->forward(y2);
+    return cv2_->forward(concat_channels({x, y1, y2, y3}));
+}
+
+// -------------------------------------------------------------
+// Concat Implementation
+// -------------------------------------------------------------
+TensorPtr Concat::forward(const std::vector<TensorPtr>& inputs) {
+    return concat_channels(inputs);
 }
 
 } // namespace soar::nn

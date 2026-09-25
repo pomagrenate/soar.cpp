@@ -23,7 +23,11 @@ void log_message(LogLevel level, std::string_view msg) {
         case LogLevel::Error: prefix = "[ERROR]"; break;
         case LogLevel::Fatal: prefix = "[FATAL]"; break;
     }
-    std::cerr << prefix << " " << msg << "\n";
+    if (level == LogLevel::Error || level == LogLevel::Fatal || level == LogLevel::Warn) {
+        std::cerr << prefix << " " << msg << std::endl;
+    } else {
+        std::cout << prefix << " " << msg << std::endl;
+    }
 }
 
 } // namespace soar::core

@@ -43,20 +43,20 @@ private:
     // Backbone
     std::shared_ptr<CBA> l0_cba_;
     std::shared_ptr<Down> l1_down_;
-    std::shared_ptr<LKR> l2_lkr_;
+    std::vector<std::shared_ptr<LKR>> l2_lkr_stack_;
     std::shared_ptr<Down> l3_down_;
-    std::shared_ptr<LKR> l4_lkr_;
+    std::vector<std::shared_ptr<LKR>> l4_lkr_stack_;
     std::shared_ptr<Down> l5_down_;
     std::vector<std::shared_ptr<LKR>> l6_lkr_stack_;
     std::shared_ptr<Down> l7_down_;
-    std::shared_ptr<LKR> l8_lkr_;
+    std::vector<std::shared_ptr<LKR>> l8_lkr_stack_;
     std::shared_ptr<Ctx> l9_ctx_;
 
     // Decoder
     std::shared_ptr<Fuse> l10_fuse_;
-    std::shared_ptr<LKR> l11_lkr_;
+    std::vector<std::shared_ptr<LKR>> l11_lkr_stack_;
     std::shared_ptr<Fuse> l12_fuse_;
-    std::shared_ptr<LKR> l13_lkr_;
+    std::vector<std::shared_ptr<LKR>> l13_lkr_stack_;
     std::shared_ptr<Fuse> l14_fuse_;
     std::shared_ptr<Agg> l15_agg_;
     std::shared_ptr<Fuse> l16_fuse_;

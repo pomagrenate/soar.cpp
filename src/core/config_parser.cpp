@@ -21,19 +21,20 @@ std::string trim(const std::string& str) {
 
 ModelConfig ConfigParser::load_model_config(const std::string& config_path) {
     std::string path_to_open = config_path;
-    if (!std::filesystem::exists(path_to_open) && std::filesystem::exists("../" + config_path)) {
+    FILE* in = std::fopen(path_to_open.c_str(), "r");
+    if (!in && (path_to_open.rfind("../", 0) != 0)) {
         path_to_open = "../" + config_path;
+        in = std::fopen(path_to_open.c_str(), "r");
     }
-
-    std::ifstream in(path_to_open);
-    if (!in.is_open()) {
+    if (!in) {
         throw DeviceError("Failed to open model configuration file: " + config_path);
     }
 
     ModelConfig cfg;
-    std::string line;
+    char buffer[4096];
 
-    while (std::getline(in, line)) {
+    while (std::fgets(buffer, sizeof(buffer), in)) {
+        std::string line(buffer);
         // Strip comments
         size_t comment_pos = line.find('#');
         if (comment_pos != std::string::npos) {
@@ -73,6 +74,7 @@ ModelConfig ConfigParser::load_model_config(const std::string& config_path) {
             }
         }
     }
+    std::fclose(in);
 
     SOAR_LOG_INFO("Parsed model configuration from {}: scale='{}', in_channels={}, nc={}",
                   config_path, cfg.variant_str, cfg.in_channels, cfg.num_classes);

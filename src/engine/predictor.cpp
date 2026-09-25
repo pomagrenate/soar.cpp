@@ -48,6 +48,7 @@ std::string Predictor::encode_rle(const uint8_t* mask, size_t height, size_t wid
 }
 
 PredictionResult Predictor::predict(const TensorPtr& input_image) {
+    NoGradGuard guard;
     model_->eval();
 
     TensorPtr logits = model_->forward(input_image);

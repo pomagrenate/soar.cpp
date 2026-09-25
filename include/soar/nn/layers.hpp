@@ -130,6 +130,26 @@ private:
 };
 
 /**
+ * @brief 2D Max Pooling layer.
+ */
+class MaxPool2d : public Module {
+public:
+    explicit MaxPool2d(size_t kernel_size = 2, size_t stride = 1, size_t padding = 0)
+        : Module("MaxPool2d"), kernel_size_(kernel_size), stride_(stride), padding_(padding) {}
+
+    TensorPtr forward(const TensorPtr& input) override;
+
+    [[nodiscard]] size_t kernel_size() const noexcept { return kernel_size_; }
+    [[nodiscard]] size_t stride() const noexcept { return stride_; }
+    [[nodiscard]] size_t padding() const noexcept { return padding_; }
+
+private:
+    size_t kernel_size_;
+    size_t stride_;
+    size_t padding_;
+};
+
+/**
  * @brief Global average pooling layer over H x W -> 1 x 1.
  */
 class AdaptiveAvgPool2d : public Module {

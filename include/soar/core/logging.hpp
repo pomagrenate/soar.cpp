@@ -23,11 +23,17 @@ void log_message(LogLevel level, std::string_view msg);
 
 namespace detail {
 template <typename T>
-inline void format_arg(std::ostringstream& oss, std::string_view fmt, size_t& pos, const T& arg) {
+inline void format_arg(std::string& out, std::string_view fmt, size_t& pos, const T& arg) {
     size_t next = fmt.find("{}", pos);
     if (next != std::string_view::npos) {
-        oss << fmt.substr(pos, next - pos);
-        oss << arg;
+        out.append(fmt.substr(pos, next - pos));
+        if constexpr (std::is_arithmetic_v<std::decay_t<T>>) {
+            out.append(std::to_string(arg));
+        } else if constexpr (std::is_convertible_v<T, std::string_view>) {
+            out.append(std::string_view(arg));
+        } else {
+            out.append(arg);
+        }
         pos = next + 2;
     }
 }
@@ -39,13 +45,14 @@ inline void log(LogLevel level, std::string_view fmt, const Args&... args) {
     if constexpr (sizeof...(Args) == 0) {
         log_message(level, fmt);
     } else {
-        std::ostringstream oss;
+        std::string out;
+        out.reserve(fmt.size() + 32 * sizeof...(Args));
         size_t pos = 0;
-        (detail::format_arg(oss, fmt, pos, args), ...);
+        (detail::format_arg(out, fmt, pos, args), ...);
         if (pos < fmt.size()) {
-            oss << fmt.substr(pos);
+            out.append(fmt.substr(pos));
         }
-        log_message(level, oss.str());
+        log_message(level, out);
     }
 }
 

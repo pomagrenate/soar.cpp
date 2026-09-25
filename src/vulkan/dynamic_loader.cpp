@@ -161,8 +161,10 @@ void DynamicLoader::configure_swiftshader_fallback() {
 
     std::string found_path;
     for (const auto& candidate : candidates) {
-        if (std::filesystem::exists(candidate)) {
-            found_path = std::filesystem::absolute(candidate).string();
+        FILE* test_f = std::fopen(candidate.c_str(), "rb");
+        if (test_f) {
+            std::fclose(test_f);
+            found_path = candidate;
             break;
         }
     }
@@ -172,28 +174,40 @@ void DynamicLoader::configure_swiftshader_fallback() {
         return;
     }
 
-    std::filesystem::path icd_json_path = std::filesystem::temp_directory_path() / "soar_swiftshader_icd.json";
-    std::ofstream out(icd_json_path);
-    if (out.is_open()) {
-        std::string json_escaped_path = found_path;
-        for (size_t i = 0; i < json_escaped_path.size(); ++i) {
-            if (json_escaped_path[i] == '\\') {
-                json_escaped_path.insert(i, "\\");
-                ++i;
+    std::string temp_dir = ".";
+#if defined(_WIN32)
+    char tmp_buf[MAX_PATH];
+    DWORD len = GetTempPathA(MAX_PATH, tmp_buf);
+    if (len > 0 && len < MAX_PATH) {
+        temp_dir = tmp_buf;
+    }
+#else
+    const char* t = std::getenv("TMPDIR");
+    if (!t) t = std::getenv("TMP");
+    if (!t) t = "/tmp";
+    temp_dir = t;
+#endif
+    if (!temp_dir.empty() && (temp_dir.back() == '/' || temp_dir.back() == '\\')) {
+        temp_dir.pop_back();
+    }
+    std::string icd_json_path = temp_dir + "/soar_swiftshader_icd.json";
+
+    FILE* out = std::fopen(icd_json_path.c_str(), "w");
+    if (out) {
+        std::string json_escaped_path;
+        for (char c : found_path) {
+            if (c == '\\') {
+                json_escaped_path += "\\\\";
+            } else {
+                json_escaped_path += c;
             }
         }
-        out << "{\n";
-        out << "  \"file_format_version\": \"1.0.0\",\n";
-        out << "  \"ICD\": {\n";
-        out << "    \"library_path\": \"" << json_escaped_path << "\",\n";
-        out << "    \"api_version\": \"1.3.0\"\n";
-        out << "  }\n";
-        out << "}\n";
-        out.close();
+        std::fprintf(out, "{\n  \"file_format_version\": \"1.0.0\",\n  \"ICD\": {\n    \"library_path\": \"%s\",\n    \"api_version\": \"1.3.0\"\n  }\n}\n", json_escaped_path.c_str());
+        std::fclose(out);
 
-        set_env_variable("VK_ICD_FILENAMES", icd_json_path.string());
-        set_env_variable("VK_DRIVER_FILES", icd_json_path.string());
-        SOAR_LOG_INFO("Configured Vulkan SwiftShader ICD fallback: {}", icd_json_path.string());
+        set_env_variable("VK_ICD_FILENAMES", icd_json_path);
+        set_env_variable("VK_DRIVER_FILES", icd_json_path);
+        SOAR_LOG_INFO("Configured Vulkan SwiftShader ICD fallback: {}", icd_json_path);
     }
 }
 

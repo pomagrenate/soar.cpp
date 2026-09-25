@@ -21,6 +21,14 @@ struct Conv2dNode : public AutogradNode {
     size_t dilation;
     size_t groups;
 
+    std::vector<std::shared_ptr<AutogradNode>> get_inputs() const override {
+        std::vector<std::shared_ptr<AutogradNode>> res;
+        if (input && input->grad_fn()) res.push_back(input->grad_fn());
+        if (weight && weight->grad_fn()) res.push_back(weight->grad_fn());
+        if (bias && bias->grad_fn()) res.push_back(bias->grad_fn());
+        return res;
+    }
+
     void backward(const TensorPtr& grad_output) override {
         const float* go = grad_output->data();
         const float* x = input->data();
@@ -47,8 +55,7 @@ struct Conv2dNode : public AutogradNode {
                 }
                 gb[co] = sum;
             }
-            accumulate_grad(bias->grad(), grad_b);
-            if (bias->grad_fn()) bias->grad_fn()->backward(grad_b);
+            propagate_grad(bias, grad_b);
         }
 
         // 2. Weight gradient: dW = dY * X^T
@@ -56,8 +63,9 @@ struct Conv2dNode : public AutogradNode {
             TensorPtr grad_w = Tensor::zeros(weight->shape());
             float* gw = grad_w->data();
 
-            if (groups == 1 && K == 1) {
+            if (groups == 1 && K == 1 && stride == 1 && padding == 0) {
                 // Pointwise 1x1
+                #pragma omp parallel for
                 for (size_t co = 0; co < C_out; ++co) {
                     for (size_t ci = 0; ci < C_in; ++ci) {
                         float sum = 0.0f;
@@ -73,6 +81,7 @@ struct Conv2dNode : public AutogradNode {
                 int dil = static_cast<int>(dilation);
                 int str = static_cast<int>(stride);
 
+                #pragma omp parallel for
                 for (size_t c = 0; c < C_in; ++c) {
                     for (size_t ky = 0; ky < K; ++ky) {
                         for (size_t kx = 0; kx < K; ++kx) {
@@ -93,9 +102,43 @@ struct Conv2dNode : public AutogradNode {
                         }
                     }
                 }
+            } else {
+                // General Convolution
+                int pad = static_cast<int>(padding);
+                int dil = static_cast<int>(dilation);
+                int str = static_cast<int>(stride);
+                size_t c_in_per_group = C_in / groups;
+                size_t c_out_per_group = C_out / groups;
+
+                #pragma omp parallel for collapse(2)
+                for (size_t g = 0; g < groups; ++g) {
+                    for (size_t co_rel = 0; co_rel < c_out_per_group; ++co_rel) {
+                        size_t co = g * c_out_per_group + co_rel;
+                        for (size_t ci_rel = 0; ci_rel < c_in_per_group; ++ci_rel) {
+                            size_t ci = g * c_in_per_group + ci_rel;
+                            for (size_t ky = 0; ky < K; ++ky) {
+                                for (size_t kx = 0; kx < K; ++kx) {
+                                    float sum = 0.0f;
+                                    for (size_t yo = 0; yo < H_out; ++yo) {
+                                        int yi = static_cast<int>(yo * str) - pad + static_cast<int>(ky * dil);
+                                        if (yi < 0 || yi >= static_cast<int>(H_in)) continue;
+                                        for (size_t xo = 0; xo < W_out; ++xo) {
+                                            int xi = static_cast<int>(xo * str) - pad + static_cast<int>(kx * dil);
+                                            if (xi < 0 || xi >= static_cast<int>(W_in)) continue;
+                                            float val_x = x[ci * (H_in * W_in) + yi * W_in + xi];
+                                            float val_go = go[co * (H_out * W_out) + yo * W_out + xo];
+                                            sum += val_x * val_go;
+                                        }
+                                    }
+                                    size_t w_idx = co * (c_in_per_group * K * K) + ci_rel * (K * K) + ky * K + kx;
+                                    gw[w_idx] = sum;
+                                }
+                            }
+                        }
+                    }
+                }
             }
-            accumulate_grad(weight->grad(), grad_w);
-            if (weight->grad_fn()) weight->grad_fn()->backward(grad_w);
+            propagate_grad(weight, grad_w);
         }
 
         // 3. Input gradient: dX = dY * W^T
@@ -103,7 +146,8 @@ struct Conv2dNode : public AutogradNode {
             TensorPtr grad_x = Tensor::zeros(input->shape());
             float* gx = grad_x->data();
 
-            if (groups == 1 && K == 1) {
+            if (groups == 1 && K == 1 && stride == 1 && padding == 0) {
+                #pragma omp parallel for
                 for (size_t ci = 0; ci < C_in; ++ci) {
                     for (size_t co = 0; co < C_out; ++co) {
                         float w_val = w[co * C_in + ci];
@@ -117,6 +161,7 @@ struct Conv2dNode : public AutogradNode {
                 int dil = static_cast<int>(dilation);
                 int str = static_cast<int>(stride);
 
+                #pragma omp parallel for
                 for (size_t c = 0; c < C_in; ++c) {
                     for (size_t yo = 0; yo < H_out; ++yo) {
                         for (size_t xo = 0; xo < W_out; ++xo) {
@@ -135,9 +180,41 @@ struct Conv2dNode : public AutogradNode {
                         }
                     }
                 }
+            } else {
+                int pad = static_cast<int>(padding);
+                int dil = static_cast<int>(dilation);
+                int str = static_cast<int>(stride);
+                size_t c_in_per_group = C_in / groups;
+                size_t c_out_per_group = C_out / groups;
+
+                #pragma omp parallel for collapse(2)
+                for (size_t g = 0; g < groups; ++g) {
+                    for (size_t ci_rel = 0; ci_rel < c_in_per_group; ++ci_rel) {
+                        size_t ci = g * c_in_per_group + ci_rel;
+                        for (size_t co_rel = 0; co_rel < c_out_per_group; ++co_rel) {
+                            size_t co = g * c_out_per_group + co_rel;
+                            for (size_t ky = 0; ky < K; ++ky) {
+                                for (size_t kx = 0; kx < K; ++kx) {
+                                    size_t w_idx = co * (c_in_per_group * K * K) + ci_rel * (K * K) + ky * K + kx;
+                                    float w_val = w[w_idx];
+
+                                    for (size_t yo = 0; yo < H_out; ++yo) {
+                                        int yi = static_cast<int>(yo * str) - pad + static_cast<int>(ky * dil);
+                                        if (yi < 0 || yi >= static_cast<int>(H_in)) continue;
+                                        for (size_t xo = 0; xo < W_out; ++xo) {
+                                            int xi = static_cast<int>(xo * str) - pad + static_cast<int>(kx * dil);
+                                            if (xi < 0 || xi >= static_cast<int>(W_in)) continue;
+                                            float go_val = go[co * (H_out * W_out) + yo * W_out + xo];
+                                            gx[ci * (H_in * W_in) + yi * W_in + xi] += go_val * w_val;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
-            accumulate_grad(input->grad(), grad_x);
-            if (input->grad_fn()) input->grad_fn()->backward(grad_x);
+            propagate_grad(input, grad_x);
         }
     }
 };
@@ -197,6 +274,7 @@ TensorPtr Conv2d::forward(const TensorPtr& input) {
 
     if (groups_ == 1 && kernel_size_ == 1 && stride_ == 1 && padding_ == 0) {
         // Pointwise 1x1 Conv
+        #pragma omp parallel for
         for (size_t co = 0; co < out_channels_; ++co) {
             float bias_val = b ? b[co] : 0.0f;
             for (size_t sp = 0; sp < H_out * W_out; ++sp) {
@@ -214,6 +292,7 @@ TensorPtr Conv2d::forward(const TensorPtr& input) {
         int str = static_cast<int>(stride_);
         int K = static_cast<int>(kernel_size_);
 
+        #pragma omp parallel for
         for (size_t c = 0; c < in_channels_; ++c) {
             float bias_val = b ? b[c] : 0.0f;
             for (size_t yo = 0; yo < H_out; ++yo) {
@@ -244,6 +323,7 @@ TensorPtr Conv2d::forward(const TensorPtr& input) {
         int str = static_cast<int>(stride_);
         int K = static_cast<int>(kernel_size_);
 
+        #pragma omp parallel for
         for (size_t co = 0; co < out_channels_; ++co) {
             float bias_val = b ? b[co] : 0.0f;
             for (size_t yo = 0; yo < H_out; ++yo) {
@@ -299,6 +379,14 @@ struct GroupNormNode : public AutogradNode {
     size_t num_groups;
     float eps;
 
+    std::vector<std::shared_ptr<AutogradNode>> get_inputs() const override {
+        std::vector<std::shared_ptr<AutogradNode>> res;
+        if (input && input->grad_fn()) res.push_back(input->grad_fn());
+        if (weight && weight->grad_fn()) res.push_back(weight->grad_fn());
+        if (bias && bias->grad_fn()) res.push_back(bias->grad_fn());
+        return res;
+    }
+
     void backward(const TensorPtr& grad_output) override {
         const float* go = grad_output->data();
         const float* x = input->data();
@@ -334,8 +422,8 @@ struct GroupNormNode : public AutogradNode {
                     gb[c] = sum_b;
                 }
             }
-            accumulate_grad(weight->grad(), grad_w);
-            accumulate_grad(bias->grad(), grad_b);
+            propagate_grad(weight, grad_w);
+            propagate_grad(bias, grad_b);
         }
 
         // 2. Input gradient
@@ -371,8 +459,7 @@ struct GroupNormNode : public AutogradNode {
                     }
                 }
             }
-            accumulate_grad(input->grad(), grad_x);
-            if (input->grad_fn()) input->grad_fn()->backward(grad_x);
+            propagate_grad(input, grad_x);
         }
     }
 };
@@ -453,6 +540,12 @@ TensorPtr GroupNorm::forward(const TensorPtr& input) {
 // -------------------------------------------------------------
 struct SiLUNode : public AutogradNode {
     TensorPtr input;
+
+    std::vector<std::shared_ptr<AutogradNode>> get_inputs() const override {
+        if (input && input->grad_fn()) return {input->grad_fn()};
+        return {};
+    }
+
     void backward(const TensorPtr& grad_output) override {
         if (!input->requires_grad()) return;
         TensorPtr grad_x = Tensor::zeros(input->shape());
@@ -465,8 +558,7 @@ struct SiLUNode : public AutogradNode {
             float dsilu = sig * (1.0f + x[i] * (1.0f - sig));
             gx[i] = go[i] * dsilu;
         }
-        accumulate_grad(input->grad(), grad_x);
-        if (input->grad_fn()) input->grad_fn()->backward(grad_x);
+        propagate_grad(input, grad_x);
     }
 };
 
@@ -492,6 +584,12 @@ TensorPtr SiLU::forward(const TensorPtr& input) {
 struct SigmoidNode : public AutogradNode {
     TensorPtr output;
     TensorPtr input;
+
+    std::vector<std::shared_ptr<AutogradNode>> get_inputs() const override {
+        if (input && input->grad_fn()) return {input->grad_fn()};
+        return {};
+    }
+
     void backward(const TensorPtr& grad_output) override {
         if (!input->requires_grad()) return;
         TensorPtr grad_x = Tensor::zeros(input->shape());
@@ -502,8 +600,7 @@ struct SigmoidNode : public AutogradNode {
         for (size_t i = 0; i < n; ++i) {
             gx[i] = go[i] * y[i] * (1.0f - y[i]);
         }
-        accumulate_grad(input->grad(), grad_x);
-        if (input->grad_fn()) input->grad_fn()->backward(grad_x);
+        propagate_grad(input, grad_x);
     }
 };
 
@@ -530,6 +627,12 @@ TensorPtr Sigmoid::forward(const TensorPtr& input) {
 struct PixelShuffleNode : public AutogradNode {
     TensorPtr input;
     size_t r;
+
+    std::vector<std::shared_ptr<AutogradNode>> get_inputs() const override {
+        if (input && input->grad_fn()) return {input->grad_fn()};
+        return {};
+    }
+
     void backward(const TensorPtr& grad_output) override {
         if (!input->requires_grad()) return;
         TensorPtr grad_x = Tensor::zeros(input->shape());
@@ -556,8 +659,7 @@ struct PixelShuffleNode : public AutogradNode {
                 }
             }
         }
-        accumulate_grad(input->grad(), grad_x);
-        if (input->grad_fn()) input->grad_fn()->backward(grad_x);
+        propagate_grad(input, grad_x);
     }
 };
 
@@ -612,6 +714,12 @@ TensorPtr PixelShuffle::forward(const TensorPtr& input) {
 struct UpsampleNode : public AutogradNode {
     TensorPtr input;
     float scale;
+
+    std::vector<std::shared_ptr<AutogradNode>> get_inputs() const override {
+        if (input && input->grad_fn()) return {input->grad_fn()};
+        return {};
+    }
+
     void backward(const TensorPtr& grad_output) override {
         if (!input->requires_grad()) return;
         TensorPtr grad_x = Tensor::zeros(input->shape());
@@ -657,8 +765,7 @@ struct UpsampleNode : public AutogradNode {
                 }
             }
         }
-        accumulate_grad(input->grad(), grad_x);
-        if (input->grad_fn()) input->grad_fn()->backward(grad_x);
+        propagate_grad(input, grad_x);
     }
 };
 
@@ -722,10 +829,119 @@ TensorPtr Upsample::forward(const TensorPtr& input) {
 }
 
 // -------------------------------------------------------------
+// MaxPool2d Autograd Node & Layer
+// -------------------------------------------------------------
+struct MaxPool2dNode : public AutogradNode {
+    TensorPtr input;
+    std::vector<int64_t> argmax_indices;
+
+    std::vector<std::shared_ptr<AutogradNode>> get_inputs() const override {
+        if (input && input->grad_fn()) return {input->grad_fn()};
+        return {};
+    }
+
+    void backward(const TensorPtr& grad_output) override {
+        if (!input->requires_grad()) return;
+        TensorPtr grad_x = Tensor::zeros(input->shape());
+        const float* go = grad_output->data();
+        float* gx = grad_x->data();
+        size_t n = argmax_indices.size();
+
+        for (size_t i = 0; i < n; ++i) {
+            int64_t idx = argmax_indices[i];
+            if (idx >= 0) {
+                gx[idx] += go[i];
+            }
+        }
+        propagate_grad(input, grad_x);
+    }
+};
+
+TensorPtr MaxPool2d::forward(const TensorPtr& input) {
+    size_t C = input->dim(0);
+    size_t H_in = input->dim(1);
+    size_t W_in = input->dim(2);
+
+    int pad = static_cast<int>(padding_);
+    int str = static_cast<int>(stride_);
+    int K = static_cast<int>(kernel_size_);
+
+    size_t H_out = (H_in + 2 * padding_ - kernel_size_) / stride_ + 1;
+    size_t W_out = (W_in + 2 * padding_ - kernel_size_) / stride_ + 1;
+
+    TensorPtr output = Tensor::create({static_cast<int64_t>(C),
+                                       static_cast<int64_t>(H_out),
+                                       static_cast<int64_t>(W_out)},
+                                      input->requires_grad());
+
+    const float* in_data = input->data();
+    float* out_data = output->data();
+
+    std::vector<int64_t> argmax_indices;
+    if (input->requires_grad()) {
+        argmax_indices.resize(C * H_out * W_out, -1);
+    }
+
+    #pragma omp parallel for
+    for (size_t c = 0; c < C; ++c) {
+        size_t in_c_offset = c * (H_in * W_in);
+        size_t out_c_offset = c * (H_out * W_out);
+
+        for (size_t yo = 0; yo < H_out; ++yo) {
+            int base_yi = static_cast<int>(yo * str) - pad;
+            for (size_t xo = 0; xo < W_out; ++xo) {
+                int base_xi = static_cast<int>(xo * str) - pad;
+
+                float max_val = -std::numeric_limits<float>::infinity();
+                int64_t max_idx = -1;
+
+                for (int ky = 0; ky < K; ++ky) {
+                    int yi = base_yi + ky;
+                    if (yi < 0 || yi >= static_cast<int>(H_in)) continue;
+
+                    for (int kx = 0; kx < K; ++kx) {
+                        int xi = base_xi + kx;
+                        if (xi < 0 || xi >= static_cast<int>(W_in)) continue;
+
+                        int64_t idx = static_cast<int64_t>(in_c_offset + yi * W_in + xi);
+                        float val = in_data[idx];
+                        if (val > max_val) {
+                            max_val = val;
+                            max_idx = idx;
+                        }
+                    }
+                }
+
+                size_t out_idx = out_c_offset + yo * W_out + xo;
+                out_data[out_idx] = (max_idx >= 0) ? max_val : 0.0f;
+                if (input->requires_grad()) {
+                    argmax_indices[out_idx] = max_idx;
+                }
+            }
+        }
+    }
+
+    if (input->requires_grad()) {
+        auto node = std::make_shared<MaxPool2dNode>();
+        node->input = input;
+        node->argmax_indices = std::move(argmax_indices);
+        output->set_grad_fn(node);
+    }
+
+    return output;
+}
+
+// -------------------------------------------------------------
 // AdaptiveAvgPool2d Implementation
 // -------------------------------------------------------------
 struct AvgPoolNode : public AutogradNode {
     TensorPtr input;
+
+    std::vector<std::shared_ptr<AutogradNode>> get_inputs() const override {
+        if (input && input->grad_fn()) return {input->grad_fn()};
+        return {};
+    }
+
     void backward(const TensorPtr& grad_output) override {
         if (!input->requires_grad()) return;
         TensorPtr grad_x = Tensor::zeros(input->shape());
@@ -742,8 +958,7 @@ struct AvgPoolNode : public AutogradNode {
                 gx[c * (H * W) + sp] = val;
             }
         }
-        accumulate_grad(input->grad(), grad_x);
-        if (input->grad_fn()) input->grad_fn()->backward(grad_x);
+        propagate_grad(input, grad_x);
     }
 };
 

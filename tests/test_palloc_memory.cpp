@@ -1,6 +1,8 @@
 #include <iostream>
 #include <cassert>
 #include <vector>
+#include <soar/memory/palloc_allocator.hpp>
+#include <soar/tensor/tensor.hpp>
 #include "soar/soar.hpp"
 
 using namespace soar::core;
@@ -108,6 +110,34 @@ void test_device_slab_sub_allocator() {
     std::cout << "  -> test_device_slab_sub_allocator PASSED\n";
 }
 
+void test_palloc_allocator_and_tensor() {
+    std::cout << "[TEST] Running test_palloc_allocator_and_tensor...\n";
+
+    // 1. PallocAllocator vector allocation
+    soar::memory::PallocVector<float> vec;
+    vec.resize(1024, 42.0f);
+    assert(vec.size() == 1024);
+    assert(reinterpret_cast<uintptr_t>(vec.data()) % 64 == 0); // 64-byte aligned
+    assert(vec[0] == 42.0f && vec[1023] == 42.0f);
+
+    // 2. Tensor allocation using palloc
+    auto tensor = soar::Tensor::randn({1, 3, 128, 128}, 0.0f, 1.0f);
+    assert(tensor->numel() == 1 * 3 * 128 * 128);
+    assert(reinterpret_cast<uintptr_t>(tensor->data()) % 64 == 0);
+
+    // 3. Dynamic object allocation via overridden new/delete
+    auto* dynamic_tensor = new soar::Tensor({1, 1, 64, 64});
+    assert(dynamic_tensor != nullptr);
+    assert(reinterpret_cast<uintptr_t>(dynamic_tensor->data()) % 64 == 0);
+    delete dynamic_tensor;
+
+    // 4. Verify palloc stats show active tracking
+    auto stats = soar::memory::get_palloc_process_info();
+    std::cout << "  palloc Peak RSS: " << (stats.peak_rss / 1024) << " KB, Current Commit: "
+              << (stats.current_commit / 1024) << " KB\n";
+    std::cout << "  -> test_palloc_allocator_and_tensor PASSED\n";
+}
+
 int main() {
     std::cout << "========================================\n";
     std::cout << "  SOAR Memory Subsystem Verification\n";
@@ -116,6 +146,7 @@ int main() {
     test_palloc_arena_alignment();
     test_host_arena_tensor_view();
     test_device_slab_sub_allocator();
+    test_palloc_allocator_and_tensor();
 
     std::cout << "\n>>> ALL MEMORY & ARENA TESTS PASSED SUCCESSFULLY! <<<\n";
     return 0;

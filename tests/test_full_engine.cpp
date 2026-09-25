@@ -1,5 +1,6 @@
 #include <soar/nn/soar_model.hpp>
 #include <soar/engine/trainer.hpp>
+#include <soar/engine/validator.hpp>
 #include <soar/engine/predictor.hpp>
 #include <soar/losses/losses.hpp>
 #include <soar/optim/adamw.hpp>
@@ -11,17 +12,26 @@
 
 void test_soar_model_variants() {
     std::cout << "[TEST] Testing SOAR model variant construction..." << std::endl;
+    std::cout << "  [V1] Constructing Nano..." << std::endl;
     soar::nn::SOARModel nano(1, 1, soar::nn::ModelVariant::Nano);
-    std::cout << "  Nano parameters:   " << nano.parameter_count() << std::endl;
-    assert(nano.parameter_count() > 200000);
+    std::cout << "  [V2] Nano constructed. Getting parameter_count..." << std::endl;
+    size_t nano_params = nano.parameter_count();
+    std::cout << "  [V3] Nano parameters:   " << nano_params << std::endl;
+    assert(nano_params > 200000);
 
+    std::cout << "  [V4] Constructing Small..." << std::endl;
     soar::nn::SOARModel small(1, 1, soar::nn::ModelVariant::Small);
-    std::cout << "  Small parameters:  " << small.parameter_count() << std::endl;
-    assert(small.parameter_count() > nano.parameter_count());
+    std::cout << "  [V5] Small constructed. Getting parameter_count..." << std::endl;
+    size_t small_params = small.parameter_count();
+    std::cout << "  [V6] Small parameters:  " << small_params << std::endl;
+    assert(small_params > nano_params);
 
+    std::cout << "  [V7] Constructing Medium..." << std::endl;
     soar::nn::SOARModel medium(1, 1, soar::nn::ModelVariant::Medium);
-    std::cout << "  Medium parameters: " << medium.parameter_count() << std::endl;
-    assert(medium.parameter_count() > small.parameter_count());
+    std::cout << "  [V8] Medium constructed. Getting parameter_count..." << std::endl;
+    size_t med_params = medium.parameter_count();
+    std::cout << "  [V9] Medium parameters: " << med_params << std::endl;
+    assert(med_params > small_params);
 
     std::cout << "  -> test_soar_model_variants PASSED" << std::endl;
 }
@@ -77,12 +87,16 @@ void test_predictor_and_rle() {
 
 void test_weight_serialization() {
     std::cout << "[TEST] Testing weight serialization and loading..." << std::endl;
+    std::cout << "  [W1] Creating m1..." << std::endl;
     auto m1 = std::make_shared<soar::nn::SOARModel>(1, 1, soar::nn::ModelVariant::Nano);
 
-    std::string tmp_path = (std::filesystem::temp_directory_path() / "test_model.soar").string();
+    std::string tmp_path = "test_model_tmp.soar";
+    std::cout << "  [W2] Saving weights to: " << tmp_path << std::endl;
     m1->save_weights(tmp_path);
 
+    std::cout << "  [W3] Creating m2..." << std::endl;
     auto m2 = std::make_shared<soar::nn::SOARModel>(1, 1, soar::nn::ModelVariant::Nano);
+    std::cout << "  [W4] Loading weights from: " << tmp_path << std::endl;
     m2->load_weights(tmp_path);
 
     // Verify parameter values match
@@ -131,6 +145,31 @@ void test_c_api() {
     std::cout << "  -> test_c_api PASSED" << std::endl;
 }
 
+void test_validator_and_pipelines() {
+    std::cout << "[TEST] Testing Validator and metric computation..." << std::endl;
+    auto model = std::make_shared<soar::nn::SOARModel>(1, 1, soar::nn::ModelVariant::Nano);
+    soar::losses::CompositeLoss loss_fn(1.0f, 1.0f, 3.0f, 1.0f);
+    soar::engine::Validator validator(model, loss_fn, 0.5f);
+
+    constexpr size_t H = 64;
+    constexpr size_t W = 64;
+    auto img = soar::Tensor::randn({1, H, W}, 0.5f, 0.1f);
+    auto target = soar::Tensor::zeros({1, H, W});
+    for (size_t i = 0; i < target->numel(); i += 4) target->data()[i] = 1.0f;
+
+    auto metrics = validator.validate_sample(img, target);
+    std::cout << "  Validation Loss: " << metrics.loss
+              << ", Dice: " << metrics.dice
+              << ", IoU: " << metrics.iou
+              << ", Acc: " << metrics.accuracy << std::endl;
+    assert(!std::isnan(metrics.loss) && metrics.loss > 0.0f);
+    assert(metrics.dice >= 0.0f && metrics.dice <= 1.0f);
+    assert(metrics.iou >= 0.0f && metrics.iou <= 1.0f);
+    assert(metrics.accuracy >= 0.0f && metrics.accuracy <= 1.0f);
+
+    std::cout << "  -> test_validator_and_pipelines PASSED" << std::endl;
+}
+
 int main() {
     try {
         std::cout << "=========================================================" << std::endl;
@@ -138,16 +177,18 @@ int main() {
         std::cout << "=========================================================" << std::endl;
 
         test_soar_model_variants();
-        test_forward_backward_training();
         test_predictor_and_rle();
         test_weight_serialization();
         test_c_api();
+        test_validator_and_pipelines();
+        test_forward_backward_training();
 
         std::cout << std::endl;
         std::cout << ">>> ALL FULL C++ ENGINE TESTS PASSED! <<<" << std::endl;
         return 0;
     } catch (const std::exception& e) {
-        std::cerr << "[FATAL] Test failed with exception: " << e.what() << std::endl;
+        std::cout << "[FATAL] Test failed with exception: " << e.what() << std::endl;
         return 1;
     }
 }
+

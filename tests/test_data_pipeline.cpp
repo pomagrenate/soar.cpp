@@ -20,15 +20,18 @@ void test_image_io() {
         }
     }
 
-    std::string tmp_bmp = (std::filesystem::temp_directory_path() / "test_io.bmp").string();
+    std::string tmp_bmp = "test_io_temp.bmp";
     bool saved = soar::data::ImageIO::save_bmp(tmp_bmp, img);
+    std::cout << "  saved: " << saved << std::endl;
     assert(saved);
 
     auto loaded = soar::data::ImageIO::load(tmp_bmp, 1);
+    std::cout << "  loaded: dim0=" << loaded->dim(0) << ", dim1=" << loaded->dim(1) << ", dim2=" << loaded->dim(2) << std::endl;
     assert(loaded->dim(0) == 1);
     assert(loaded->dim(1) == H);
     assert(loaded->dim(2) == W);
 
+    std::cout << "  pixel center: " << loaded->data()[20 * W + 20] << ", pixel border: " << loaded->data()[0] << std::endl;
     // Verify center pixel is white (1.0f)
     assert(loaded->data()[20 * W + 20] > 0.99f);
     // Verify border pixel is black (0.0f)
@@ -65,60 +68,71 @@ void test_polygon_rasterizer() {
 
 void test_coco_dataset() {
     std::cout << "[TEST] Running test_coco_dataset..." << std::endl;
-    std::filesystem::path tmp_dir = std::filesystem::temp_directory_path() / "soar_coco_test";
-    std::filesystem::create_directories(tmp_dir);
 
-    // Create a dummy image
+    // Create a dummy image in current directory
     auto img = soar::Tensor::ones({1, 64, 64});
-    std::string img_path = (tmp_dir / "sample0.bmp").string();
-    soar::data::ImageIO::save_bmp(img_path, img);
+    std::string img_path = "sample0_coco.bmp";
+    bool saved = soar::data::ImageIO::save_bmp(img_path, img);
+    std::cout << "  saved bmp: " << saved << std::endl;
+    assert(saved);
 
     // Create a dummy COCO JSON
     std::string json_content = R"({
-        "images": [{"id": 1, "file_name": "sample0.bmp", "width": 64, "height": 64}],
+        "images": [{"id": 1, "file_name": "sample0_coco.bmp", "width": 64, "height": 64}],
         "annotations": [{
             "id": 101, "image_id": 1, "category_id": 1,
             "segmentation": [[10, 10, 40, 10, 40, 40, 10, 40]]
         }]
     })";
 
-    std::string json_path = (tmp_dir / "annotations.json").string();
-    std::ofstream out(json_path);
-    out << json_content;
-    out.close();
+    std::string json_path = "annotations_coco.json";
+    FILE* f_json = std::fopen(json_path.c_str(), "w");
+    if (f_json) {
+        std::fputs(json_content.c_str(), f_json);
+        std::fclose(f_json);
+    }
 
-    soar::data::COCODataset ds(tmp_dir.string(), json_path, 1);
-    assert(ds.size() == 1);
+    try {
+        std::cout << "  Creating COCODataset..." << std::endl;
+        soar::data::COCODataset ds(".", json_path, 1);
+        std::cout << "  ds.size() = " << ds.size() << std::endl;
+        assert(ds.size() == 1);
 
-    auto sample = ds.get_sample(0);
-    assert(sample.filename == "sample0.bmp");
-    assert(sample.image->dim(1) == 64 && sample.image->dim(2) == 64);
-    assert(sample.mask->dim(1) == 64 && sample.mask->dim(2) == 64);
-    assert(sample.mask->data()[20 * 64 + 20] == 1.0f);
+        auto sample = ds.get_sample(0);
+        std::cout << "  sample loaded: filename=" << sample.filename << std::endl;
+        assert(sample.filename == "sample0_coco.bmp");
+        assert(sample.image->dim(1) == 64 && sample.image->dim(2) == 64);
+        assert(sample.mask->dim(1) == 64 && sample.mask->dim(2) == 64);
+        std::cout << "  mask pixel (20,20) = " << sample.mask->data()[20 * 64 + 20] << std::endl;
+        assert(sample.mask->data()[20 * 64 + 20] == 1.0f);
+    } catch (const std::exception& e) {
+        std::cout << "[COCO EXC] " << e.what() << std::endl;
+        assert(false);
+    }
 
-    std::filesystem::remove_all(tmp_dir);
+    std::filesystem::remove("sample0_coco.bmp");
+    std::filesystem::remove("annotations_coco.json");
     std::cout << "  -> test_coco_dataset PASSED" << std::endl;
 }
 
 void test_yolo_dataset() {
     std::cout << "[TEST] Running test_yolo_dataset..." << std::endl;
-    std::filesystem::path tmp_dir = std::filesystem::temp_directory_path() / "soar_yolo_test";
-    std::filesystem::path img_dir = tmp_dir / "images";
-    std::filesystem::path lbl_dir = tmp_dir / "labels";
-    std::filesystem::create_directories(img_dir);
-    std::filesystem::create_directories(lbl_dir);
+    std::filesystem::create_directories("yolo_img_dir");
+    std::filesystem::create_directories("yolo_lbl_dir");
 
     auto img = soar::Tensor::ones({1, 100, 100});
-    std::string img_path = (img_dir / "yolo_sample.bmp").string();
+    std::string img_path = "yolo_img_dir/yolo_sample.bmp";
     soar::data::ImageIO::save_bmp(img_path, img);
 
     // Create a normalized polygon in labels: class 0, box from (0.1, 0.1) to (0.5, 0.5)
-    std::string lbl_path = (lbl_dir / "yolo_sample.txt").string();
-    std::ofstream out(lbl_path);
-    out << "0 0.1 0.1 0.5 0.1 0.5 0.5 0.1 0.5\n";
-    out.close();
+    std::string lbl_path = "yolo_lbl_dir/yolo_sample.txt";
+    FILE* f_lbl = std::fopen(lbl_path.c_str(), "w");
+    if (f_lbl) {
+        std::fputs("0 0.1 0.1 0.5 0.1 0.5 0.5 0.1 0.5\n", f_lbl);
+        std::fclose(f_lbl);
+    }
 
-    soar::data::YOLODataset ds(img_dir.string(), lbl_dir.string(), 1);
+    soar::data::YOLODataset ds("yolo_img_dir", "yolo_lbl_dir", 1);
     assert(ds.size() == 1);
 
     auto sample = ds.get_sample(0);
@@ -126,7 +140,8 @@ void test_yolo_dataset() {
     assert(sample.mask->data()[30 * 100 + 30] == 1.0f);
     assert(sample.mask->data()[80 * 100 + 80] == 0.0f);
 
-    std::filesystem::remove_all(tmp_dir);
+    std::filesystem::remove_all("yolo_img_dir");
+    std::filesystem::remove_all("yolo_lbl_dir");
     std::cout << "  -> test_yolo_dataset PASSED" << std::endl;
 }
 
