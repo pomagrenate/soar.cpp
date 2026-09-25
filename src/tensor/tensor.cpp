@@ -148,9 +148,10 @@ void AutogradNode::add_grad_output(const TensorPtr& incoming) {
 void propagate_grad(const TensorPtr& tensor, const TensorPtr& incoming) {
     if (!tensor || !incoming) return;
     if (tensor->requires_grad()) {
-        tensor->add_grad(incoming);
         if (auto fn = tensor->grad_fn()) {
             fn->add_grad_output(incoming);
+        } else {
+            tensor->add_grad(incoming);
         }
     }
 }
@@ -194,6 +195,7 @@ void run_backward(std::shared_ptr<AutogradNode> root, const TensorPtr& root_grad
 
         // Execute backward for this node
         node->backward(go);
+        node->release_variables(); // release saved activations immediately
 
         // Decrement in-degree for dependent nodes
         for (const auto& parent : node->get_inputs()) {

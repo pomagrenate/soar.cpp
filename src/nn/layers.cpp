@@ -217,6 +217,10 @@ struct Conv2dNode : public AutogradNode {
             propagate_grad(input, grad_x);
         }
     }
+
+    void release_variables() override {
+        input = nullptr;
+    }
 };
 
 // -------------------------------------------------------------
@@ -462,6 +466,14 @@ struct GroupNormNode : public AutogradNode {
             propagate_grad(input, grad_x);
         }
     }
+
+    void release_variables() override {
+        input = nullptr;
+        saved_mean.clear();
+        saved_mean.shrink_to_fit();
+        saved_rstd.clear();
+        saved_rstd.shrink_to_fit();
+    }
 };
 
 GroupNorm::GroupNorm(size_t num_groups, size_t num_channels, float eps, bool affine)
@@ -560,6 +572,10 @@ struct SiLUNode : public AutogradNode {
         }
         propagate_grad(input, grad_x);
     }
+
+    void release_variables() override {
+        input = nullptr;
+    }
 };
 
 TensorPtr SiLU::forward(const TensorPtr& input) {
@@ -601,6 +617,11 @@ struct SigmoidNode : public AutogradNode {
             gx[i] = go[i] * y[i] * (1.0f - y[i]);
         }
         propagate_grad(input, grad_x);
+    }
+
+    void release_variables() override {
+        input = nullptr;
+        output = nullptr;
     }
 };
 
@@ -660,6 +681,10 @@ struct PixelShuffleNode : public AutogradNode {
             }
         }
         propagate_grad(input, grad_x);
+    }
+
+    void release_variables() override {
+        input = nullptr;
     }
 };
 
@@ -767,6 +792,10 @@ struct UpsampleNode : public AutogradNode {
         }
         propagate_grad(input, grad_x);
     }
+
+    void release_variables() override {
+        input = nullptr;
+    }
 };
 
 TensorPtr Upsample::forward(const TensorPtr& input) {
@@ -854,6 +883,12 @@ struct MaxPool2dNode : public AutogradNode {
             }
         }
         propagate_grad(input, grad_x);
+    }
+
+    void release_variables() override {
+        input = nullptr;
+        argmax_indices.clear();
+        argmax_indices.shrink_to_fit();
     }
 };
 
@@ -959,6 +994,10 @@ struct AvgPoolNode : public AutogradNode {
             }
         }
         propagate_grad(input, grad_x);
+    }
+
+    void release_variables() override {
+        input = nullptr;
     }
 };
 

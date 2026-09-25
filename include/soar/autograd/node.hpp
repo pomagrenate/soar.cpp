@@ -28,6 +28,11 @@ struct AutogradNode : public std::enable_shared_from_this<AutogradNode> {
 
     [[nodiscard]] virtual std::string name() const { return "AutogradNode"; }
 
+    /**
+     * @brief Release saved forward variables to reclaim memory immediately upon backward completion.
+     */
+    virtual void release_variables() {}
+
     // List of input nodes that feed into this node
     std::vector<std::shared_ptr<AutogradNode>> next_nodes;
 

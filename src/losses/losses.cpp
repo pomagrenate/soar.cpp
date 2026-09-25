@@ -52,6 +52,11 @@ struct BCENode : public AutogradNode {
 
         propagate_grad(logits, grad_z);
     }
+
+    void release_variables() override {
+        logits = nullptr;
+        targets = nullptr;
+    }
 };
 
 BCEWithLogitsLoss::BCEWithLogitsLoss(float weight, float pos_weight)
@@ -138,6 +143,11 @@ struct DiceNode : public AutogradNode {
         }
 
         propagate_grad(logits, grad_z);
+    }
+
+    void release_variables() override {
+        logits = nullptr;
+        targets = nullptr;
     }
 };
 

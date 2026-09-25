@@ -9,6 +9,8 @@
 #include <soar/data/image_io.hpp>
 #include <soar/data/coco_dataset.hpp>
 #include <soar/data/yolo_dataset.hpp>
+#include <soar/vulkan/context.hpp>
+#include "palloc.h"
 
 #include <iostream>
 #include <iomanip>
@@ -83,6 +85,8 @@ void print_usage() {
               << "  --labels-dir <path>           Path to YOLO labels directory\n"
               << "  --data-format <coco|yolo>     Dataset format (default: coco)\n"
               << "  --weights <path>              Path to model weights (.soar)\n"
+              << "  --device <auto|gpu|cpu>       Hardware acceleration device (default: auto)\n"
+              << "  --img-size <H> [W]            Target image resolution (default: 1024 1024)\n"
               << "  --threshold <float>           Sigmoid classification threshold (default: 0.5)\n\n"
               << "Options for 'train':\n"
               << "  --epochs <N>                  Total training epochs (default: 50)\n"
@@ -306,6 +310,9 @@ int main(int argc, char* argv[]) {
     float threshold = 0.5f;
     size_t benchmark_h = 512;
     size_t benchmark_w = 512;
+    std::string device_str = "auto";
+    size_t img_h = 1024;
+    size_t img_w = 1024;
 
     for (int i = 2; i < argc; ++i) {
         std::string arg = argv[i];
@@ -316,6 +323,15 @@ int main(int argc, char* argv[]) {
         else if (arg == "--labels-dir" && i + 1 < argc) labels_dir = argv[++i];
         else if (arg == "--data-format" && i + 1 < argc) data_format = argv[++i];
         else if (arg == "--weights" && i + 1 < argc) weights_path = argv[++i];
+        else if (arg == "--device" && i + 1 < argc) device_str = argv[++i];
+        else if (arg == "--img-size" && i + 1 < argc) {
+            img_h = std::stoul(argv[++i]);
+            if (i + 1 < argc && argv[i + 1][0] != '-') {
+                img_w = std::stoul(argv[++i]);
+            } else {
+                img_w = img_h;
+            }
+        }
         else if (arg == "--input" && i + 1 < argc) input_path = argv[++i];
         else if (arg == "--output" && i + 1 < argc) output_path = argv[++i];
         else if (arg == "--output-dir" && i + 1 < argc) output_dir = argv[++i];
@@ -361,6 +377,26 @@ int main(int argc, char* argv[]) {
         std::cout << "[WARN] Config file '" << config_path << "' not found, using default Nano configuration." << std::endl;
     }
 
+    std::unique_ptr<soar::vk::VulkanContext> vk_ctx;
+    if (device_str != "cpu") {
+        try {
+            vk_ctx = std::make_unique<soar::vk::VulkanContext>(false);
+            std::cout << "[SOAR Engine] GPU acceleration initialized on device: "
+                      << vk_ctx->device_info().device_name << std::endl;
+        } catch (const std::exception& e) {
+            if (device_str == "gpu" || device_str == "vulkan") {
+                std::cout << "[WARN] Vulkan GPU device requested but failed: " << e.what()
+                          << ". Falling back to multi-threaded CPU OpenMP engine." << std::endl;
+            } else {
+                std::cout << "[SOAR Engine] Vulkan device not detected (" << e.what()
+                          << "). Running with multi-threaded CPU OpenMP engine." << std::endl;
+            }
+            vk_ctx.reset();
+        }
+    } else {
+        std::cout << "[SOAR Engine] Device set to CPU." << std::endl;
+    }
+
     auto model = std::make_shared<soar::nn::SOARModel>(m_cfg.in_channels, m_cfg.num_classes, m_cfg.variant);
     std::cout << "[SOAR Engine] Architecture: " << m_cfg.variant_str
               << " (" << model->parameter_count() << " parameters)" << std::endl;
@@ -368,6 +404,10 @@ int main(int argc, char* argv[]) {
     if (!weights_path.empty()) {
         std::cout << "[SOAR Engine] Loading checkpoint weights from: " << weights_path << std::endl;
         model->load_weights(weights_path);
+    }
+
+    if (vk_ctx) {
+        model->to_device(*vk_ctx);
     }
 
     // --------------------------------------------------------------------------------------------------
@@ -399,6 +439,7 @@ int main(int argc, char* argv[]) {
                   << "  Learning Rate:           " << learning_rate << "\n"
                   << "  Weight Decay:            " << weight_decay << "\n"
                   << "  Physical Batch Size:     1 (Strict Native Resolution)\n"
+                  << "  Image Resolution:        " << img_h << "x" << img_w << "\n"
                   << "  Accumulate Grad Batches: " << accumulate_grad_batches << "\n"
                   << "  Validation Split:        " << val_split << "\n"
                   << "  Loss Composition:        BCE(pw=" << pos_weight << ", w=" << bce_weight
@@ -469,6 +510,10 @@ int main(int argc, char* argv[]) {
                     ep_train_loss += m.loss;
                     ep_train_dice += m.dice_score;
                     ep_train_iou += m.iou_score;
+
+                    if (!is_accumulating) {
+                        ::pa_collect(false);
+                    }
                 }
 
                 float avg_train_loss = static_cast<float>(ep_train_loss / static_cast<double>(train_count));
@@ -523,6 +568,8 @@ int main(int argc, char* argv[]) {
                     std::string interval_path = path_join(checkpoint_dir, "epoch_" + std::to_string(ep + 1) + ".soar");
                     model->save_weights(interval_path);
                 }
+
+                ::pa_collect(true);
             }
 
             std::cout << "\n[SOAR Engine] Training completed! Best Val Loss: " << best_val_loss
@@ -530,12 +577,14 @@ int main(int argc, char* argv[]) {
         };
 
         if (!images_dir.empty() && !annotation_file.empty()) {
-            std::cout << "[SOAR Engine] Loading COCO Dataset from: " << images_dir << std::endl;
-            soar::data::COCODataset ds(images_dir, annotation_file, static_cast<int>(m_cfg.in_channels));
+            std::cout << "[SOAR Engine] Loading COCO Dataset from: " << images_dir
+                      << " (Resolution: " << img_h << "x" << img_w << ")" << std::endl;
+            soar::data::COCODataset ds(images_dir, annotation_file, static_cast<int>(m_cfg.in_channels), img_h, img_w);
             run_dataset_training(ds);
         } else if (!images_dir.empty() && !labels_dir.empty()) {
-            std::cout << "[SOAR Engine] Loading YOLO Dataset from: " << images_dir << std::endl;
-            soar::data::YOLODataset ds(images_dir, labels_dir, static_cast<int>(m_cfg.in_channels));
+            std::cout << "[SOAR Engine] Loading YOLO Dataset from: " << images_dir
+                      << " (Resolution: " << img_h << "x" << img_w << ")" << std::endl;
+            soar::data::YOLODataset ds(images_dir, labels_dir, static_cast<int>(m_cfg.in_channels), img_h, img_w);
             run_dataset_training(ds);
         } else {
             std::cout << "[SOAR Engine] No dataset path provided. Running synthetic training cycle..." << std::endl;
@@ -568,12 +617,14 @@ int main(int argc, char* argv[]) {
         soar::engine::ValidationMetrics v_metrics{};
 
         if (!images_dir.empty() && !annotation_file.empty()) {
-            soar::data::COCODataset ds(images_dir, annotation_file, static_cast<int>(m_cfg.in_channels));
-            std::cout << "[SOAR Engine] Loaded COCO Validation Dataset: " << ds.size() << " samples." << std::endl;
+            soar::data::COCODataset ds(images_dir, annotation_file, static_cast<int>(m_cfg.in_channels), img_h, img_w);
+            std::cout << "[SOAR Engine] Loaded COCO Validation Dataset: " << ds.size() << " samples ("
+                      << img_h << "x" << img_w << ")." << std::endl;
             v_metrics = validator.validate(ds, {}, save_dir, 10);
         } else if (!images_dir.empty() && !labels_dir.empty()) {
-            soar::data::YOLODataset ds(images_dir, labels_dir, static_cast<int>(m_cfg.in_channels));
-            std::cout << "[SOAR Engine] Loaded YOLO Validation Dataset: " << ds.size() << " samples." << std::endl;
+            soar::data::YOLODataset ds(images_dir, labels_dir, static_cast<int>(m_cfg.in_channels), img_h, img_w);
+            std::cout << "[SOAR Engine] Loaded YOLO Validation Dataset: " << ds.size() << " samples ("
+                      << img_h << "x" << img_w << ")." << std::endl;
             v_metrics = validator.validate(ds, {}, save_dir, 10);
         } else {
             std::cerr << "[ERROR] Validation requires a dataset (--images-dir and --annotation-file or --labels-dir)." << std::endl;
@@ -584,6 +635,7 @@ int main(int argc, char* argv[]) {
         if (!save_dir.empty()) {
             std::cout << "[SOAR Engine] Visual validation comparisons saved to: " << save_dir << std::endl;
         }
+        ::pa_collect(true);
     }
     // --------------------------------------------------------------------------------------------------
     // PREDICT COMMAND (Inference & RLE / BMP Export)
@@ -649,6 +701,7 @@ int main(int argc, char* argv[]) {
                 std::cout << "[SOAR Engine] Saved probability mask to: " << out_mask << std::endl;
             }
         }
+        ::pa_collect(true);
     }
     // --------------------------------------------------------------------------------------------------
     // TEST COMMAND (Dataset Testing Pipeline)
@@ -661,12 +714,14 @@ int main(int argc, char* argv[]) {
         soar::engine::ValidationMetrics t_metrics{};
 
         if (!images_dir.empty() && !annotation_file.empty()) {
-            soar::data::COCODataset ds(images_dir, annotation_file, static_cast<int>(m_cfg.in_channels));
-            std::cout << "[SOAR Engine] Loaded COCO Test Dataset: " << ds.size() << " samples." << std::endl;
+            soar::data::COCODataset ds(images_dir, annotation_file, static_cast<int>(m_cfg.in_channels), img_h, img_w);
+            std::cout << "[SOAR Engine] Loaded COCO Test Dataset: " << ds.size() << " samples ("
+                      << img_h << "x" << img_w << ")." << std::endl;
             t_metrics = validator.validate(ds, {}, save_dir, 20);
         } else if (!images_dir.empty() && !labels_dir.empty()) {
-            soar::data::YOLODataset ds(images_dir, labels_dir, static_cast<int>(m_cfg.in_channels));
-            std::cout << "[SOAR Engine] Loaded YOLO Test Dataset: " << ds.size() << " samples." << std::endl;
+            soar::data::YOLODataset ds(images_dir, labels_dir, static_cast<int>(m_cfg.in_channels), img_h, img_w);
+            std::cout << "[SOAR Engine] Loaded YOLO Test Dataset: " << ds.size() << " samples ("
+                      << img_h << "x" << img_w << ")." << std::endl;
             t_metrics = validator.validate(ds, {}, save_dir, 20);
         } else {
             std::cerr << "[ERROR] Test command requires a dataset." << std::endl;
@@ -677,11 +732,14 @@ int main(int argc, char* argv[]) {
         if (!save_dir.empty()) {
             std::cout << "[SOAR Engine] Test qualitative comparison visualizations saved to: " << save_dir << std::endl;
         }
+        ::pa_collect(true);
     } else {
         std::cerr << "Unknown command: " << cmd << std::endl;
         print_usage();
         return 1;
     }
 
+    model.reset();
+    vk_ctx.reset();
     return 0;
 }

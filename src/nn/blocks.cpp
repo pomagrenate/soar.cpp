@@ -26,6 +26,11 @@ struct AddNode : public AutogradNode {
         if (a) propagate_grad(a, grad_output);
         if (b) propagate_grad(b, grad_output);
     }
+
+    void release_variables() override {
+        a = nullptr;
+        b = nullptr;
+    }
 };
 
 TensorPtr add_tensors(const TensorPtr& a, const TensorPtr& b) {
@@ -92,6 +97,11 @@ struct MulBroadcastNode : public AutogradNode {
             }
             propagate_grad(b, grad_b);
         }
+    }
+
+    void release_variables() override {
+        a = nullptr;
+        b = nullptr;
     }
 };
 
@@ -168,6 +178,12 @@ struct ConvexNode : public AutogradNode {
             propagate_grad(g, grad_g);
         }
     }
+
+    void release_variables() override {
+        g = nullptr;
+        a = nullptr;
+        b = nullptr;
+    }
 };
 
 TensorPtr convex_combination(const TensorPtr& g, const TensorPtr& a, const TensorPtr& b) {
@@ -221,6 +237,10 @@ struct ConcatNode : public AutogradNode {
             }
             c_offset += c_curr;
         }
+    }
+
+    void release_variables() override {
+        inputs.clear();
     }
 };
 

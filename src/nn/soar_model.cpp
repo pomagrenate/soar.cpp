@@ -31,6 +31,12 @@ struct AutoPadNode : public AutogradNode {
         }
         propagate_grad(input, grad_in);
     }
+
+    void release_variables() override {
+        input = nullptr;
+        src_indices.clear();
+        src_indices.shrink_to_fit();
+    }
 };
 
 struct UnpadNode : public AutogradNode {
@@ -60,6 +66,10 @@ struct UnpadNode : public AutogradNode {
             }
         }
         propagate_grad(input, grad_in);
+    }
+
+    void release_variables() override {
+        input = nullptr;
     }
 };
 
