@@ -7,6 +7,12 @@ import subprocess
 from pathlib import Path
 
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "plot":
+        from soar.plotting import plot_results
+        csv_path = sys.argv[2] if len(sys.argv) > 2 else "runs/results.csv"
+        plot_results(csv_path)
+        sys.exit(0)
+
     root = Path(__file__).resolve().parent
     exe = root / "build" / ("soar_engine.exe" if sys.platform == "win32" else "soar_engine")
     if not exe.exists():

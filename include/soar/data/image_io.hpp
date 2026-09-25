@@ -20,6 +20,20 @@ public:
      * @param tensor Tensor of shape [C, H, W] or [H, W].
      */
     static bool save_bmp(const std::string& path, const TensorPtr& tensor);
+
+    /**
+     * @brief Save a 4-panel visual validation comparison image as a 24-bit BMP:
+     *        [Raw Image | Ground Truth (Green) | Prediction (Cyan) | Error Map (TP=Green, FP=Red, FN=Yellow)]
+     * @param path Output file path.
+     * @param image Input image [C, H, W] or [1, H, W].
+     * @param true_mask Ground truth mask [1, H, W] or [H, W].
+     * @param pred_mask Predicted mask [1, H, W] or [H, W].
+     * @return True if saved successfully.
+     */
+    static bool save_comparison_bmp(const std::string& path,
+                                    const TensorPtr& image,
+                                    const TensorPtr& true_mask,
+                                    const TensorPtr& pred_mask);
 };
 
 } // namespace soar::data

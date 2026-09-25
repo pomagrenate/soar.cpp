@@ -42,3 +42,8 @@ bin/
 *.lib
 *.soar
 *.spv
+
+# Runs & Visualizations
+runs/
+val_visualizations/
+predictions/

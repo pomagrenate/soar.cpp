@@ -181,4 +181,7 @@ class SOAR:
 
         return probs, mask, rle_buf.value.decode("utf-8")
 
-__all__ = ["SOAR", "__version__"]
+from .plotting import plot_results, plot_validation_batch
+
+__all__ = ["SOAR", "plot_results", "plot_validation_batch", "__version__"]
+
