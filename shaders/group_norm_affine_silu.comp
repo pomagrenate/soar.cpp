@@ -1,0 +1,65 @@
+#version 450
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) readonly buffer InputBuffer {
+    float in_data[];
+};
+
+layout(set = 0, binding = 1) readonly buffer StatsBuffer {
+    float stats[];
+};
+
+layout(set = 0, binding = 2) readonly buffer GammaBuffer {
+    float gamma[];
+};
+
+layout(set = 0, binding = 3) readonly buffer BetaBuffer {
+    float beta[];
+};
+
+layout(set = 0, binding = 4) writeonly buffer OutputBuffer {
+    float out_data[];
+};
+
+layout(push_constant) uniform PushConstants {
+    uint H;
+    uint W;
+    uint C;
+    uint num_groups;
+    uint apply_silu;
+} pc;
+
+void main() {
+    uint x = gl_GlobalInvocationID.x;
+    uint y = gl_GlobalInvocationID.y;
+    uint c = gl_GlobalInvocationID.z;
+
+    if (x >= pc.W || y >= pc.H || c >= pc.C) {
+        return;
+    }
+
+    uint channels_per_group = pc.C / pc.num_groups;
+    uint group_id = c / channels_per_group;
+
+    float mean = stats[2 * group_id];
+    float rstd = stats[2 * group_id + 1];
+
+    float g = gamma[c];
+    float b = beta[c];
+
+    // Fused affine coefficients: Y = alpha * X + delta
+    float alpha = g * rstd;
+    float delta = b - (alpha * mean);
+
+    uint idx = c * (pc.H * pc.W) + y * pc.W + x;
+    float val = in_data[idx];
+    float norm_val = fma(alpha, val, delta);
+
+    if (pc.apply_silu != 0) {
+        // PyTorch SiLU: x * sigmoid(x) = x / (1 + exp(-x))
+        norm_val = norm_val / (1.0 + exp(-norm_val));
+    }
+
+    out_data[idx] = norm_val;
+}

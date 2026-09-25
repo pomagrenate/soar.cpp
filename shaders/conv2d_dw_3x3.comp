@@ -1,0 +1,70 @@
+#version 450
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) readonly buffer InputBuffer {
+    float in_data[];
+};
+
+layout(set = 0, binding = 1) readonly buffer WeightBuffer {
+    float weights[];
+};
+
+layout(set = 0, binding = 2) readonly buffer BiasBuffer {
+    float bias[];
+};
+
+layout(set = 0, binding = 3) writeonly buffer OutputBuffer {
+    float out_data[];
+};
+
+layout(push_constant) uniform PushConstants {
+    uint H_in;
+    uint W_in;
+    uint H_out;
+    uint W_out;
+    uint C;
+    uint stride;
+    uint dilation;
+    uint has_bias;
+} pc;
+
+void main() {
+    uint x = gl_GlobalInvocationID.x;
+    uint y = gl_GlobalInvocationID.y;
+    uint c = gl_GlobalInvocationID.z;
+
+    if (x >= pc.W_out || y >= pc.H_out || c >= pc.C) {
+        return;
+    }
+
+    uint in_spatial = pc.H_in * pc.W_in;
+    uint out_spatial = pc.H_out * pc.W_out;
+    uint in_channel_offset = c * in_spatial;
+    uint out_channel_offset = c * out_spatial;
+    uint w_channel_offset = c * 9;
+
+    float acc = (pc.has_bias != 0) ? bias[c] : 0.0;
+
+    int center_y = int(y * pc.stride);
+    int center_x = int(x * pc.stride);
+    int h_bound = int(pc.H_in);
+    int w_bound = int(pc.W_in);
+    int dil = int(pc.dilation);
+
+    uint w_idx = 0;
+    for (int ky = -1; ky <= 1; ++ky) {
+        int py = center_y + ky * dil;
+        bool valid_y = (py >= 0 && py < h_bound);
+        for (int kx = -1; kx <= 1; ++kx) {
+            int px = center_x + kx * dil;
+            if (valid_y && px >= 0 && px < w_bound) {
+                float val = in_data[in_channel_offset + uint(py * w_bound + px)];
+                acc = fma(val, weights[w_channel_offset + w_idx], acc);
+            }
+            w_idx++;
+        }
+    }
+
+    out_data[out_channel_offset + y * pc.W_out + x] = acc;
+}

@@ -1,0 +1,49 @@
+#version 450
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) readonly buffer InputBuffer {
+    float in_data[];
+};
+
+layout(set = 0, binding = 1) writeonly buffer OutputBuffer {
+    float out_data[];
+};
+
+layout(push_constant) uniform PushConstants {
+    uint H;
+    uint W;
+    uint C;
+} pc;
+
+shared float shared_sum[256];
+
+void main() {
+    uint c = gl_WorkGroupID.x;
+    if (c >= pc.C) {
+        return;
+    }
+
+    uint tid = gl_LocalInvocationID.x;
+    uint spatial_hw = pc.H * pc.W;
+    uint channel_offset = c * spatial_hw;
+
+    float local_sum = 0.0;
+    for (uint i = tid; i < spatial_hw; i += 256) {
+        local_sum += in_data[channel_offset + i];
+    }
+
+    shared_sum[tid] = local_sum;
+    barrier();
+
+    for (uint s = 128; s > 0; s >>= 1) {
+        if (tid < s) {
+            shared_sum[tid] += shared_sum[tid + s];
+        }
+        barrier();
+    }
+
+    if (tid == 0) {
+        out_data[c] = shared_sum[0] / float(spatial_hw);
+    }
+}

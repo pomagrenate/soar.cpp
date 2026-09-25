@@ -1,0 +1,3 @@
+[submodule "palloc"]
+	path = palloc
+	url = https://github.com/pomagrenate/palloc.git

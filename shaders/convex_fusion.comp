@@ -1,0 +1,37 @@
+#version 450
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) readonly buffer GateBuffer {
+    float gate_data[];
+};
+
+layout(set = 0, binding = 1) readonly buffer BufferA {
+    float a_data[];
+};
+
+layout(set = 0, binding = 2) readonly buffer BufferB {
+    float b_data[];
+};
+
+layout(set = 0, binding = 3) writeonly buffer OutputBuffer {
+    float out_data[];
+};
+
+layout(push_constant) uniform PushConstants {
+    uint total_elements;
+} pc;
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= pc.total_elements) {
+        return;
+    }
+
+    float g = gate_data[idx];
+    float a = a_data[idx];
+    float b = b_data[idx];
+
+    // Convex combination: g * a + (1.0 - g) * b
+    out_data[idx] = fma(g, a, (1.0 - g) * b);
+}

@@ -32,11 +32,13 @@ ENV/
 .vscode/
 .ipynb_checkpoints/
 
-# Runs & Outputs
-runs/
-logs/
-*.csv
-submission.csv
-*.log
-!README.md
-!TODO.md
+# C++ Build & Native Binaries
+build/
+bin/
+*.exe
+*.dll
+*.dylib
+*.a
+*.lib
+*.soar
+*.spv

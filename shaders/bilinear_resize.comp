@@ -1,0 +1,67 @@
+#version 450
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) readonly buffer InputBuffer {
+    float in_data[];
+};
+
+layout(set = 0, binding = 1) writeonly buffer OutputBuffer {
+    float out_data[];
+};
+
+layout(push_constant) uniform PushConstants {
+    uint H_in;
+    uint W_in;
+    uint H_out;
+    uint W_out;
+    uint C;
+} pc;
+
+void main() {
+    uint x = gl_GlobalInvocationID.x;
+    uint y = gl_GlobalInvocationID.y;
+    uint c = gl_GlobalInvocationID.z;
+
+    if (x >= pc.W_out || y >= pc.H_out || c >= pc.C) {
+        return;
+    }
+
+    float scale_y = float(pc.H_in) / float(pc.H_out);
+    float scale_x = float(pc.W_in) / float(pc.W_out);
+
+    // PyTorch align_corners=False coordinate transform
+    float src_y = (float(y) + 0.5) * scale_y - 0.5;
+    float src_x = (float(x) + 0.5) * scale_x - 0.5;
+
+    src_y = max(src_y, 0.0);
+    src_x = max(src_x, 0.0);
+
+    int y0 = int(floor(src_y));
+    int x0 = int(floor(src_x));
+
+    int max_y = int(pc.H_in) - 1;
+    int max_x = int(pc.W_in) - 1;
+
+    int y1 = min(y0 + 1, max_y);
+    int x1 = min(x0 + 1, max_x);
+    y0 = min(y0, max_y);
+    x0 = min(x0, max_x);
+
+    float ly = src_y - float(y0);
+    float lx = src_x - float(x0);
+    float hy = 1.0 - ly;
+    float hx = 1.0 - lx;
+
+    uint channel_offset = c * (pc.H_in * pc.W_in);
+    float v00 = in_data[channel_offset + uint(y0 * int(pc.W_in) + x0)];
+    float v01 = in_data[channel_offset + uint(y0 * int(pc.W_in) + x1)];
+    float v10 = in_data[channel_offset + uint(y1 * int(pc.W_in) + x0)];
+    float v11 = in_data[channel_offset + uint(y1 * int(pc.W_in) + x1)];
+
+    float top = hx * v00 + lx * v01;
+    float bottom = hx * v10 + lx * v11;
+    float result = hy * top + ly * bottom;
+
+    out_data[c * (pc.H_out * pc.W_out) + y * pc.W_out + x] = result;
+}

@@ -1,0 +1,73 @@
+#version 450
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) readonly buffer InputBuffer {
+    float in_data[];
+};
+
+// Output: stats[2 * group_idx] = mean, stats[2 * group_idx + 1] = rstd
+layout(set = 0, binding = 1) writeonly buffer StatsBuffer {
+    float stats[];
+};
+
+layout(push_constant) uniform PushConstants {
+    uint H;
+    uint W;
+    uint C;
+    uint num_groups;
+    float eps;
+} pc;
+
+shared float shared_sum[256];
+shared float shared_sum_sq[256];
+
+void main() {
+    uint group_id = gl_WorkGroupID.x;
+    if (group_id >= pc.num_groups) {
+        return;
+    }
+
+    uint tid = gl_LocalInvocationID.x;
+    uint channels_per_group = pc.C / pc.num_groups;
+    uint start_channel = group_id * channels_per_group;
+    uint spatial_hw = pc.H * pc.W;
+    uint total_elements = channels_per_group * spatial_hw;
+
+    float local_sum = 0.0;
+    float local_sum_sq = 0.0;
+
+    // Strided loop over all elements in this group
+    for (uint i = tid; i < total_elements; i += 256) {
+        uint c_local = i / spatial_hw;
+        uint sp_idx = i % spatial_hw;
+        uint c_global = start_channel + c_local;
+        float val = in_data[c_global * spatial_hw + sp_idx];
+        local_sum += val;
+        local_sum_sq = fma(val, val, local_sum_sq);
+    }
+
+    shared_sum[tid] = local_sum;
+    shared_sum_sq[tid] = local_sum_sq;
+    barrier();
+
+    // Parallel tree reduction
+    for (uint s = 128; s > 0; s >>= 1) {
+        if (tid < s) {
+            shared_sum[tid] += shared_sum[tid + s];
+            shared_sum_sq[tid] += shared_sum_sq[tid + s];
+        }
+        barrier();
+    }
+
+    if (tid == 0) {
+        float mean = shared_sum[0] / float(total_elements);
+        // Biased variance: E[X^2] - (E[X])^2
+        float mean_sq = shared_sum_sq[0] / float(total_elements);
+        float variance = max(mean_sq - (mean * mean), 0.0);
+        float rstd = inversesqrt(variance + pc.eps);
+
+        stats[2 * group_id] = mean;
+        stats[2 * group_id + 1] = rstd;
+    }
+}

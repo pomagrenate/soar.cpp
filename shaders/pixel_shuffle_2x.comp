@@ -1,0 +1,43 @@
+#version 450
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) readonly buffer InputBuffer {
+    float in_data[];
+};
+
+layout(set = 0, binding = 1) writeonly buffer OutputBuffer {
+    float out_data[];
+};
+
+layout(push_constant) uniform PushConstants {
+    uint H_out;
+    uint W_out;
+    uint C_out;
+} pc;
+
+void main() {
+    uint x = gl_GlobalInvocationID.x;
+    uint y = gl_GlobalInvocationID.y;
+    uint c = gl_GlobalInvocationID.z;
+
+    if (x >= pc.W_out || y >= pc.H_out || c >= pc.C_out) {
+        return;
+    }
+
+    uint r = 2;
+    uint in_y = y / r;
+    uint in_x = x / r;
+    uint sub_y = y % r;
+    uint sub_x = x % r;
+
+    uint H_in = pc.H_out / r;
+    uint W_in = pc.W_out / r;
+
+    uint c_in = c * 4 + sub_y * 2 + sub_x;
+
+    uint in_idx = c_in * (H_in * W_in) + in_y * W_in + in_x;
+    uint out_idx = c * (pc.H_out * pc.W_out) + y * pc.W_out + x;
+
+    out_data[out_idx] = in_data[in_idx];
+}

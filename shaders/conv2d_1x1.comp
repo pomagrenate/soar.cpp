@@ -1,0 +1,51 @@
+#version 450
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) readonly buffer InputBuffer {
+    float in_data[];
+};
+
+layout(set = 0, binding = 1) readonly buffer WeightBuffer {
+    float weights[];
+};
+
+layout(set = 0, binding = 2) readonly buffer BiasBuffer {
+    float bias[];
+};
+
+layout(set = 0, binding = 3) writeonly buffer OutputBuffer {
+    float out_data[];
+};
+
+layout(push_constant) uniform PushConstants {
+    uint H;
+    uint W;
+    uint C_in;
+    uint C_out;
+    uint has_bias;
+} pc;
+
+void main() {
+    uint x = gl_GlobalInvocationID.x;
+    uint y = gl_GlobalInvocationID.y;
+    uint c_out = gl_GlobalInvocationID.z;
+
+    if (x >= pc.W || y >= pc.H || c_out >= pc.C_out) {
+        return;
+    }
+
+    uint spatial_hw = pc.H * pc.W;
+    uint spatial_idx = y * pc.W + x;
+
+    float acc = (pc.has_bias != 0) ? bias[c_out] : 0.0;
+
+    uint weight_offset = c_out * pc.C_in;
+    for (uint c_in = 0; c_in < pc.C_in; ++c_in) {
+        float in_val = in_data[c_in * spatial_hw + spatial_idx];
+        float w_val = weights[weight_offset + c_in];
+        acc = fma(in_val, w_val, acc);
+    }
+
+    out_data[c_out * spatial_hw + spatial_idx] = acc;
+}

@@ -1,0 +1,28 @@
+#version 450
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) readonly buffer InputA {
+    float a_data[];
+};
+
+layout(set = 0, binding = 1) readonly buffer InputB {
+    float b_data[];
+};
+
+layout(set = 0, binding = 2) writeonly buffer OutputBuffer {
+    float out_data[];
+};
+
+layout(push_constant) uniform PushConstants {
+    uint total_elements;
+} pc;
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= pc.total_elements) {
+        return;
+    }
+
+    out_data[idx] = a_data[idx] + b_data[idx];
+}
