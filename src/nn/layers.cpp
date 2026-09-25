@@ -65,12 +65,16 @@ struct Conv2dNode : public AutogradNode {
 
             if (groups == 1 && K == 1 && stride == 1 && padding == 0) {
                 // Pointwise 1x1
-                #pragma omp parallel for
+                size_t HW = H_out * W_out;
+                #pragma omp parallel for collapse(2)
                 for (size_t co = 0; co < C_out; ++co) {
                     for (size_t ci = 0; ci < C_in; ++ci) {
+                        const float* go_co = &go[co * HW];
+                        const float* x_ci = &x[ci * HW];
                         float sum = 0.0f;
-                        for (size_t sp = 0; sp < H_out * W_out; ++sp) {
-                            sum += go[co * (H_out * W_out) + sp] * x[ci * (H_out * W_out) + sp];
+                        #pragma omp simd reduction(+:sum)
+                        for (size_t sp = 0; sp < HW; ++sp) {
+                            sum += go_co[sp] * x_ci[sp];
                         }
                         gw[co * C_in + ci] = sum;
                     }
@@ -147,12 +151,16 @@ struct Conv2dNode : public AutogradNode {
             float* gx = grad_x->data();
 
             if (groups == 1 && K == 1 && stride == 1 && padding == 0) {
+                size_t HW = H_out * W_out;
                 #pragma omp parallel for
                 for (size_t ci = 0; ci < C_in; ++ci) {
+                    float* gx_ci = &gx[ci * HW];
                     for (size_t co = 0; co < C_out; ++co) {
                         float w_val = w[co * C_in + ci];
-                        for (size_t sp = 0; sp < H_out * W_out; ++sp) {
-                            gx[ci * (H_out * W_out) + sp] += go[co * (H_out * W_out) + sp] * w_val;
+                        const float* go_co = &go[co * HW];
+                        #pragma omp simd
+                        for (size_t sp = 0; sp < HW; ++sp) {
+                            gx_ci[sp] += go_co[sp] * w_val;
                         }
                     }
                 }
@@ -277,16 +285,20 @@ TensorPtr Conv2d::forward(const TensorPtr& input) {
     float* y = output->data();
 
     if (groups_ == 1 && kernel_size_ == 1 && stride_ == 1 && padding_ == 0) {
-        // Pointwise 1x1 Conv
+        // Pointwise 1x1 Conv with cache-friendly streaming SIMD FMA
+        size_t HW = H_out * W_out;
         #pragma omp parallel for
         for (size_t co = 0; co < out_channels_; ++co) {
             float bias_val = b ? b[co] : 0.0f;
-            for (size_t sp = 0; sp < H_out * W_out; ++sp) {
-                float sum = bias_val;
-                for (size_t ci = 0; ci < in_channels_; ++ci) {
-                    sum += x[ci * (H_out * W_out) + sp] * w[co * in_channels_ + ci];
+            float* y_co = &y[co * HW];
+            std::fill_n(y_co, HW, bias_val);
+            for (size_t ci = 0; ci < in_channels_; ++ci) {
+                float w_val = w[co * in_channels_ + ci];
+                const float* x_ci = &x[ci * HW];
+                #pragma omp simd
+                for (size_t sp = 0; sp < HW; ++sp) {
+                    y_co[sp] += x_ci[sp] * w_val;
                 }
-                y[co * (H_out * W_out) + sp] = sum;
             }
         }
     } else if (groups_ == in_channels_ && in_channels_ == out_channels_) {
@@ -815,6 +827,7 @@ TensorPtr Upsample::forward(const TensorPtr& input) {
     float scale_y = static_cast<float>(H_in) / static_cast<float>(H_out);
     float scale_x = static_cast<float>(W_in) / static_cast<float>(W_out);
 
+    #pragma omp parallel for collapse(2)
     for (size_t c = 0; c < C; ++c) {
         for (size_t y = 0; y < H_out; ++y) {
             for (size_t x = 0; x < W_out; ++x) {

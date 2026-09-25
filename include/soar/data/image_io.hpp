@@ -9,10 +9,15 @@ class ImageIO {
 public:
     /**
      * @brief Load image from disk into a Tensor of shape [C, H, W] normalized to [0.0, 1.0].
+     *        If target_h and target_w are specified (>0), performs direct on-the-fly SIMD
+     *        bilinear down/up-sampling to eliminate intermediate raw-resolution allocations.
      * @param path Path to image file (PNG, JPG, BMP, etc.).
      * @param desired_channels Number of channels (1 for grayscale, 3 for RGB).
+     * @param target_h Optional target height.
+     * @param target_w Optional target width.
      */
-    static TensorPtr load(const std::string& path, int desired_channels = 1);
+    static TensorPtr load(const std::string& path, int desired_channels = 1,
+                          size_t target_h = 0, size_t target_w = 0);
 
     /**
      * @brief Save a 1-channel or 3-channel Tensor as a standard 24-bit BMP image.

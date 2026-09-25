@@ -205,27 +205,31 @@ void COCODataset::parse_json(const std::string& json_path) {
                 }
             }
 
-            if (rec.image_id != 0) {
-                annotations_by_image_[rec.image_id].push_back(rec);
+            all_annotations_.push_back(std::move(rec));
+            size_t ann_idx = all_annotations_.size() - 1;
+            const auto& stored = all_annotations_[ann_idx];
+
+            if (stored.image_id != 0) {
+                annotations_by_image_[stored.image_id].push_back(ann_idx);
             }
 
             std::string resolved_fname;
-            if (!rec.image_id_str.empty()) {
-                annotations_by_key_[rec.image_id_str].push_back(rec);
-                auto it = id_to_filename.find(rec.image_id_str);
+            if (!stored.image_id_str.empty()) {
+                annotations_by_key_[stored.image_id_str].push_back(ann_idx);
+                auto it = id_to_filename.find(stored.image_id_str);
                 if (it != id_to_filename.end()) resolved_fname = it->second;
             }
-            if (resolved_fname.empty() && rec.image_id != 0) {
-                auto it = id_to_filename.find(std::to_string(rec.image_id));
+            if (resolved_fname.empty() && stored.image_id != 0) {
+                auto it = id_to_filename.find(std::to_string(stored.image_id));
                 if (it != id_to_filename.end()) resolved_fname = it->second;
             }
 
             if (!resolved_fname.empty()) {
-                annotations_by_key_[resolved_fname].push_back(rec);
+                annotations_by_key_[resolved_fname].push_back(ann_idx);
                 std::string bname = fs::path(resolved_fname).filename().generic_string();
                 std::string stem = fs::path(resolved_fname).stem().generic_string();
-                if (bname != resolved_fname) annotations_by_key_[bname].push_back(rec);
-                if (stem != resolved_fname && stem != bname) annotations_by_key_[stem].push_back(rec);
+                if (bname != resolved_fname) annotations_by_key_[bname].push_back(ann_idx);
+                if (stem != resolved_fname && stem != bname) annotations_by_key_[stem].push_back(ann_idx);
             }
         }
     }
@@ -275,74 +279,77 @@ DatasetSample COCODataset::get_sample(size_t index) const {
         }
     }
 
+    size_t orig_h = rec.height;
+    size_t orig_w = rec.width;
+    size_t out_h = (target_height_ > 0) ? target_height_ : orig_h;
+    size_t out_w = (target_width_ > 0) ? target_width_ : orig_w;
+
     DatasetSample sample;
     sample.filename = rec.file_name;
     sample.image_id = rec.id;
-    sample.image = ImageIO::load(img_path, desired_channels_);
+    sample.image = ImageIO::load(img_path, desired_channels_, out_h, out_w);
 
-    size_t H = sample.image->dim(1);
-    size_t W = sample.image->dim(2);
-    sample.orig_height = H;
-    sample.orig_width = W;
+    if (orig_h == 0 || orig_w == 0) {
+        orig_h = sample.image->dim(1);
+        orig_w = sample.image->dim(2);
+        if (out_h == 0) out_h = orig_h;
+        if (out_w == 0) out_w = orig_w;
+    }
+    sample.orig_height = orig_h;
+    sample.orig_width = orig_w;
 
-    sample.mask = Tensor::zeros({1, static_cast<int64_t>(H), static_cast<int64_t>(W)});
+    float scale_x = static_cast<float>(out_w) / static_cast<float>(orig_w);
+    float scale_y = static_cast<float>(out_h) / static_cast<float>(orig_h);
+
+    sample.mask = Tensor::zeros({1, static_cast<int64_t>(out_h), static_cast<int64_t>(out_w)});
     float* mask_data = sample.mask->data();
 
-    const std::vector<AnnotationRecord>* matched_anns = nullptr;
+    const std::vector<size_t>* matched_ann_indices = nullptr;
     auto it_key = annotations_by_key_.find(rec.file_name);
     if (it_key != annotations_by_key_.end()) {
-        matched_anns = &it_key->second;
+        matched_ann_indices = &it_key->second;
     } else {
         std::string bname = fs::path(rec.file_name).filename().generic_string();
         it_key = annotations_by_key_.find(bname);
         if (it_key != annotations_by_key_.end()) {
-            matched_anns = &it_key->second;
+            matched_ann_indices = &it_key->second;
         } else {
             std::string stem = fs::path(rec.file_name).stem().generic_string();
             it_key = annotations_by_key_.find(stem);
             if (it_key != annotations_by_key_.end()) {
-                matched_anns = &it_key->second;
+                matched_ann_indices = &it_key->second;
             } else if (!rec.str_id.empty()) {
                 it_key = annotations_by_key_.find(rec.str_id);
                 if (it_key != annotations_by_key_.end()) {
-                    matched_anns = &it_key->second;
+                    matched_ann_indices = &it_key->second;
                 }
             }
         }
     }
 
-    if (matched_anns) {
-        for (const auto& ann : *matched_anns) {
-            for (const auto& poly_coords : ann.polygons) {
-                if (poly_coords.size() < 6) continue;
-                std::vector<Point2D> pts;
-                pts.reserve(poly_coords.size() / 2);
-                for (size_t i = 0; i + 1 < poly_coords.size(); i += 2) {
-                    pts.push_back(Point2D{poly_coords[i], poly_coords[i + 1]});
-                }
-                PolygonRasterizer::rasterize(mask_data, H, W, pts, 1.0f);
+    auto rasterize_ann = [&](const AnnotationRecord& ann) {
+        for (const auto& poly_coords : ann.polygons) {
+            if (poly_coords.size() < 6) continue;
+            std::vector<Point2D> pts;
+            pts.reserve(poly_coords.size() / 2);
+            for (size_t i = 0; i + 1 < poly_coords.size(); i += 2) {
+                pts.push_back(Point2D{poly_coords[i] * scale_x, poly_coords[i + 1] * scale_y});
             }
+            PolygonRasterizer::rasterize(mask_data, out_h, out_w, pts, 1.0f);
+        }
+    };
+
+    if (matched_ann_indices) {
+        for (size_t idx : *matched_ann_indices) {
+            rasterize_ann(all_annotations_[idx]);
         }
     } else {
         auto it = annotations_by_image_.find(rec.id);
         if (it != annotations_by_image_.end()) {
-            for (const auto& ann : it->second) {
-                for (const auto& poly_coords : ann.polygons) {
-                    if (poly_coords.size() < 6) continue;
-                    std::vector<Point2D> pts;
-                    pts.reserve(poly_coords.size() / 2);
-                    for (size_t i = 0; i + 1 < poly_coords.size(); i += 2) {
-                        pts.push_back(Point2D{poly_coords[i], poly_coords[i + 1]});
-                    }
-                    PolygonRasterizer::rasterize(mask_data, H, W, pts, 1.0f);
-                }
+            for (size_t idx : it->second) {
+                rasterize_ann(all_annotations_[idx]);
             }
         }
-    }
-
-    if (target_height_ > 0 && target_width_ > 0 && (target_height_ != H || target_width_ != W)) {
-        sample.image = nn::resize_bilinear(sample.image, target_height_, target_width_);
-        sample.mask = nn::resize_bilinear(sample.mask, target_height_, target_width_);
     }
 
     return sample;

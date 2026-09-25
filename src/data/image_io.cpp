@@ -15,7 +15,7 @@
 
 namespace soar::data {
 
-TensorPtr ImageIO::load(const std::string& path, int desired_channels) {
+TensorPtr ImageIO::load(const std::string& path, int desired_channels, size_t target_h, size_t target_w) {
     int w = 0;
     int h = 0;
     int orig_channels = 0;
@@ -29,16 +29,63 @@ TensorPtr ImageIO::load(const std::string& path, int desired_channels) {
     size_t H = static_cast<size_t>(h);
     size_t W = static_cast<size_t>(w);
 
+    // Direct on-the-fly bilinear sampling if target resolution is requested and different
+    if (target_h > 0 && target_w > 0 && (target_h != H || target_w != W)) {
+        TensorPtr tensor = Tensor::create({static_cast<int64_t>(C),
+                                          static_cast<int64_t>(target_h),
+                                          static_cast<int64_t>(target_w)});
+        float* tensor_data = tensor->data();
+        float scale_y = static_cast<float>(H) / static_cast<float>(target_h);
+        float scale_x = static_cast<float>(W) / static_cast<float>(target_w);
+
+        #pragma omp parallel for collapse(2)
+        for (size_t c = 0; c < C; ++c) {
+            for (size_t out_y = 0; out_y < target_h; ++out_y) {
+                float src_y = (static_cast<float>(out_y) + 0.5f) * scale_y - 0.5f;
+                int y0 = std::max(0, std::min(static_cast<int>(std::floor(src_y)), static_cast<int>(H) - 1));
+                int y1 = std::max(0, std::min(y0 + 1, static_cast<int>(H) - 1));
+                float dy = std::max(0.0f, std::min(1.0f, src_y - static_cast<float>(y0)));
+                float my = 1.0f - dy;
+
+                float* row_out = &tensor_data[c * (target_h * target_w) + out_y * target_w];
+                const unsigned char* p_y0 = &raw_pixels[y0 * W * C + c];
+                const unsigned char* p_y1 = &raw_pixels[y1 * W * C + c];
+
+                #pragma omp simd
+                for (size_t out_x = 0; out_x < target_w; ++out_x) {
+                    float src_x = (static_cast<float>(out_x) + 0.5f) * scale_x - 0.5f;
+                    int x0 = std::max(0, std::min(static_cast<int>(std::floor(src_x)), static_cast<int>(W) - 1));
+                    int x1 = std::max(0, std::min(x0 + 1, static_cast<int>(W) - 1));
+                    float dx = std::max(0.0f, std::min(1.0f, src_x - static_cast<float>(x0)));
+                    float mx = 1.0f - dx;
+
+                    float v00 = static_cast<float>(p_y0[x0 * C]);
+                    float v01 = static_cast<float>(p_y0[x1 * C]);
+                    float v10 = static_cast<float>(p_y1[x0 * C]);
+                    float v11 = static_cast<float>(p_y1[x1 * C]);
+
+                    float val = (v00 * mx + v01 * dx) * my + (v10 * mx + v11 * dx) * dy;
+                    row_out[out_x] = val * (1.0f / 255.0f);
+                }
+            }
+        }
+
+        stbi_image_free(raw_pixels);
+        return tensor;
+    }
+
     TensorPtr tensor = Tensor::create({static_cast<int64_t>(C), static_cast<int64_t>(H), static_cast<int64_t>(W)});
     float* tensor_data = tensor->data();
 
     // Convert interleaved HWC unsigned char to planar CHW float normalized to [0, 1]
+    #pragma omp parallel for collapse(2)
     for (size_t c = 0; c < C; ++c) {
         for (size_t y = 0; y < H; ++y) {
+            float* row_out = &tensor_data[c * (H * W) + y * W];
+            const unsigned char* row_in = &raw_pixels[y * W * C + c];
+            #pragma omp simd
             for (size_t x = 0; x < W; ++x) {
-                size_t raw_idx = (y * W + x) * C + c;
-                float normalized = static_cast<float>(raw_pixels[raw_idx]) / 255.0f;
-                tensor_data[c * (H * W) + y * W + x] = normalized;
+                row_out[x] = static_cast<float>(row_in[x * C]) * (1.0f / 255.0f);
             }
         }
     }

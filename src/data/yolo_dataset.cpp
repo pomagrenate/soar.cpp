@@ -65,14 +65,14 @@ DatasetSample YOLODataset::get_sample(size_t index) const {
     DatasetSample sample;
     sample.filename = filename;
     sample.image_id = index;
-    sample.image = ImageIO::load(img_path_str, desired_channels_);
+    sample.image = ImageIO::load(img_path_str, desired_channels_, target_height_, target_width_);
 
-    size_t H = sample.image->dim(1);
-    size_t W = sample.image->dim(2);
-    sample.orig_height = H;
-    sample.orig_width = W;
+    size_t out_h = sample.image->dim(1);
+    size_t out_w = sample.image->dim(2);
+    sample.orig_height = (target_height_ > 0) ? target_height_ : out_h;
+    sample.orig_width = (target_width_ > 0) ? target_width_ : out_w;
 
-    sample.mask = Tensor::zeros({1, static_cast<int64_t>(H), static_cast<int64_t>(W)});
+    sample.mask = Tensor::zeros({1, static_cast<int64_t>(out_h), static_cast<int64_t>(out_w)});
     float* mask_data = sample.mask->data();
 
     // Find label txt file with matching stem
@@ -97,18 +97,13 @@ DatasetSample YOLODataset::get_sample(size_t index) const {
                 float norm_y = std::strtof(ptr, &end);
                 if (end == ptr) break;
                 ptr = end;
-                pts.push_back(Point2D{norm_x * static_cast<float>(W), norm_y * static_cast<float>(H)});
+                pts.push_back(Point2D{norm_x * static_cast<float>(out_w), norm_y * static_cast<float>(out_h)});
             }
             if (pts.size() >= 3) {
-                PolygonRasterizer::rasterize(mask_data, H, W, pts, 1.0f);
+                PolygonRasterizer::rasterize(mask_data, out_h, out_w, pts, 1.0f);
             }
         }
         std::fclose(in);
-    }
-
-    if (target_height_ > 0 && target_width_ > 0 && (target_height_ != H || target_width_ != W)) {
-        sample.image = nn::resize_bilinear(sample.image, target_height_, target_width_);
-        sample.mask = nn::resize_bilinear(sample.mask, target_height_, target_width_);
     }
 
     return sample;

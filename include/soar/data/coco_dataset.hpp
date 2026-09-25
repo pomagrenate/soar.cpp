@@ -53,8 +53,9 @@ private:
     size_t target_width_;
 
     std::vector<ImageRecord> image_records_;
-    std::map<uint64_t, std::vector<AnnotationRecord>> annotations_by_image_;
-    std::unordered_map<std::string, std::vector<AnnotationRecord>> annotations_by_key_;
+    std::vector<AnnotationRecord> all_annotations_;
+    std::unordered_map<uint64_t, std::vector<size_t>> annotations_by_image_;
+    std::unordered_map<std::string, std::vector<size_t>> annotations_by_key_;
     std::unordered_map<std::string, std::string> file_map_;
 
     void parse_json(const std::string& json_path);

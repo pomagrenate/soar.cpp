@@ -152,11 +152,36 @@ void DynamicLoader::unload() {
 }
 
 void DynamicLoader::configure_swiftshader_fallback() {
+    // Check if NVIDIA Vulkan ICD is available first
+    std::vector<std::string> nvidia_candidates = {
+        "/usr/lib/x86_64-linux-gnu/libGLX_nvidia.so.0",
+        "/usr/lib/x86_64-linux-gnu/libGLX_nvidia.so",
+        "/usr/lib64/libGLX_nvidia.so.0",
+        "/usr/lib/libGLX_nvidia.so.0"
+    };
+    for (const auto& cand : nvidia_candidates) {
+        FILE* tf = std::fopen(cand.c_str(), "rb");
+        if (tf) {
+            std::fclose(tf);
+            std::string icd_json_path = "/tmp/soar_nvidia_icd.json";
+            FILE* out = std::fopen(icd_json_path.c_str(), "w");
+            if (out) {
+                std::fprintf(out, "{\n  \"file_format_version\": \"1.0.0\",\n  \"ICD\": {\n    \"library_path\": \"%s\",\n    \"api_version\": \"1.3.0\"\n  }\n}\n", cand.c_str());
+                std::fclose(out);
+                set_env_variable("VK_ICD_FILENAMES", icd_json_path);
+                set_env_variable("VK_DRIVER_FILES", icd_json_path);
+                SOAR_LOG_INFO("Configured Vulkan NVIDIA ICD: {}", icd_json_path);
+                return;
+            }
+        }
+    }
+
     std::vector<std::string> candidates = {
         "E:\\Program Filess\\Antigravity\\vk_swiftshader.dll",
         "C:\\Program Files\\Google\\Chrome\\Application\\153.0.8010.53\\vk_swiftshader.dll",
         "vk_swiftshader.dll",
-        "libvk_swiftshader.so"
+        "libvk_swiftshader.so",
+        "/usr/lib/x86_64-linux-gnu/libvk_swiftshader.so"
     };
 
     std::string found_path;
@@ -231,6 +256,10 @@ void DynamicLoader::load_library(const std::string& custom_lib_path) {
 #else
     search_names.push_back("libvulkan.so.1");
     search_names.push_back("libvulkan.so");
+    search_names.push_back("/usr/lib/x86_64-linux-gnu/libvulkan.so.1");
+    search_names.push_back("/usr/lib/x86_64-linux-gnu/libvulkan.so");
+    search_names.push_back("/usr/local/lib/libvulkan.so.1");
+    search_names.push_back("/usr/local/lib/libvulkan.so");
 #endif
 
     for (const auto& name : search_names) {
