@@ -23,8 +23,8 @@ enum class StatusCode : uint8_t {
 
 class Status {
 public:
-    constexpr Status() noexcept : code_(StatusCode::Success) {}
-    constexpr Status(StatusCode code, std::string_view msg = "") : code_(code), message_(msg) {}
+    Status() noexcept : code_(StatusCode::Success) {}
+    Status(StatusCode code, std::string_view msg = "") : code_(code), message_(msg) {}
 
     [[nodiscard]] constexpr bool ok() const noexcept { return code_ == StatusCode::Success; }
     [[nodiscard]] constexpr StatusCode code() const noexcept { return code_; }
