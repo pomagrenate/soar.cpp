@@ -123,10 +123,8 @@ struct DiceNode : public AutogradNode {
         double sum_p = 0.0;
         double sum_y = 0.0;
 
-        std::vector<float> p(n);
         for (size_t i = 0; i < n; ++i) {
             float pi = sigmoid_f(z[i]);
-            p[i] = pi;
             inter += pi * y[i];
             sum_p += pi;
             sum_y += y[i];
@@ -134,12 +132,15 @@ struct DiceNode : public AutogradNode {
 
         double denom = sum_p + sum_y + smooth;
         double denom_sq = denom * denom;
+        double numer = 2.0 * inter + smooth;
+        float factor = go * weight;
 
         for (size_t i = 0; i < n; ++i) {
-            double dp_dz = p[i] * (1.0f - p[i]);
-            double d_dice_dp = (2.0 * y[i] * denom - (2.0 * inter + smooth)) / denom_sq;
+            float pi = sigmoid_f(z[i]);
+            float dp_dz = pi * (1.0f - pi);
+            double d_dice_dp = (2.0 * y[i] * denom - numer) / denom_sq;
             double d_loss_dz = -d_dice_dp * dp_dz;
-            gz[i] = static_cast<float>(go * weight * d_loss_dz);
+            gz[i] = static_cast<float>(factor * d_loss_dz);
         }
 
         propagate_grad(logits, grad_z);
@@ -298,10 +299,8 @@ struct TverskyNode : public AutogradNode {
         size_t n = logits->numel();
 
         double tp = 0.0, fp = 0.0, fn = 0.0;
-        std::vector<float> p(n);
         for (size_t i = 0; i < n; ++i) {
             float pi = sigmoid_f(z[i]);
-            p[i] = pi;
             tp += pi * y[i];
             fp += pi * (1.0f - y[i]);
             fn += (1.0f - pi) * y[i];
@@ -310,14 +309,16 @@ struct TverskyNode : public AutogradNode {
         double num = tp + smooth;
         double den = tp + alpha * fp + beta * fn + smooth;
         double den_sq = den * den;
+        float factor = go * weight;
 
         for (size_t i = 0; i < n; ++i) {
-            double dp_dz = p[i] * (1.0f - p[i]);
+            float pi = sigmoid_f(z[i]);
+            float dp_dz = pi * (1.0f - pi);
             double d_tp = y[i];
             double d_den = y[i] + alpha * (1.0f - y[i]) - beta * y[i];
             double d_tversky_dp = (d_tp * den - num * d_den) / den_sq;
             double d_loss_dz = -d_tversky_dp * dp_dz;
-            gz[i] = static_cast<float>(go * weight * d_loss_dz);
+            gz[i] = static_cast<float>(factor * d_loss_dz);
         }
 
         propagate_grad(logits, grad_z);
@@ -427,20 +428,20 @@ TensorPtr DiceBCELoss::forward(const TensorPtr& logits, const TensorPtr& targets
                 // 2. Dice gradient
                 if (dw > 0.0f) {
                     double inter = 0.0, sum_p = 0.0, sum_y = 0.0;
-                    std::vector<float> p(n);
                     for (size_t i = 0; i < n; ++i) {
                         float pi = sigmoid_f(z[i]);
-                        p[i] = pi;
                         inter += pi * y[i];
                         sum_p += pi;
                         sum_y += y[i];
                     }
                     double denom = sum_p + sum_y + smooth;
                     double denom_sq = denom * denom;
+                    double numer = 2.0 * inter + smooth;
                     float scale_dice = go * w * dw;
                     for (size_t i = 0; i < n; ++i) {
-                        double dp_dz = p[i] * (1.0f - p[i]);
-                        double d_dice_dp = (2.0 * y[i] * denom - (2.0 * inter + smooth)) / denom_sq;
+                        float pi = sigmoid_f(z[i]);
+                        float dp_dz = pi * (1.0f - pi);
+                        double d_dice_dp = (2.0 * y[i] * denom - numer) / denom_sq;
                         double d_loss_dz = -d_dice_dp * dp_dz;
                         gz[i] += static_cast<float>(scale_dice * d_loss_dz);
                     }

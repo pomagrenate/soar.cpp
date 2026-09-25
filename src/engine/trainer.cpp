@@ -67,7 +67,10 @@ StepMetrics Trainer::train_step(const TensorPtr& images, const TensorPtr& masks,
         optimizer_.zero_grad();
     }
 
-    return compute_metrics(logits, masks, loss->item(), bce_l, dice_l);
+    StepMetrics m = compute_metrics(logits, masks, loss->item(), bce_l, dice_l);
+    logits->set_grad_fn(nullptr);
+    loss->set_grad_fn(nullptr);
+    return m;
 }
 
 void Trainer::step_scheduler() {

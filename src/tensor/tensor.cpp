@@ -139,7 +139,7 @@ void Tensor::add_grad(const TensorPtr& incoming) {
 void AutogradNode::add_grad_output(const TensorPtr& incoming) {
     if (!incoming) return;
     if (!grad_output_) {
-        grad_output_ = incoming->clone();
+        grad_output_ = incoming;
     } else {
         grad_output_->add_grad(incoming);
     }
@@ -161,6 +161,7 @@ void run_backward(std::shared_ptr<AutogradNode> root, const TensorPtr& root_grad
 
     // 1. Build reachability graph and compute in-degree in backward DAG
     std::unordered_map<AutogradNode*, int> in_degree;
+    std::unordered_map<AutogradNode*, std::vector<std::shared_ptr<AutogradNode>>> next_nodes;
     std::unordered_set<AutogradNode*> visited;
     std::vector<std::shared_ptr<AutogradNode>> stack;
     stack.push_back(root);
@@ -172,6 +173,7 @@ void run_backward(std::shared_ptr<AutogradNode> root, const TensorPtr& root_grad
 
         for (const auto& parent : curr->get_inputs()) {
             if (!parent) continue;
+            next_nodes[curr.get()].push_back(parent);
             in_degree[parent.get()]++;
             if (visited.insert(parent.get()).second) {
                 stack.push_back(parent);
@@ -197,14 +199,16 @@ void run_backward(std::shared_ptr<AutogradNode> root, const TensorPtr& root_grad
         node->backward(go);
         node->release_variables(); // release saved activations immediately
 
-        // Decrement in-degree for dependent nodes
-        for (const auto& parent : node->get_inputs()) {
-            if (!parent) continue;
-            auto it = in_degree.find(parent.get());
-            if (it != in_degree.end()) {
-                it->second--;
-                if (it->second == 0) {
-                    ready_queue.push(parent);
+        // Decrement in-degree for dependent nodes using cached graph edges
+        auto it_edges = next_nodes.find(node.get());
+        if (it_edges != next_nodes.end()) {
+            for (const auto& parent : it_edges->second) {
+                auto it = in_degree.find(parent.get());
+                if (it != in_degree.end()) {
+                    it->second--;
+                    if (it->second == 0) {
+                        ready_queue.push(parent);
+                    }
                 }
             }
         }
@@ -226,7 +230,9 @@ void Tensor::backward(TensorPtr gradient) {
     add_grad(gradient);
 
     if (grad_fn_) {
-        run_backward(grad_fn_, gradient);
+        auto root_fn = std::move(grad_fn_);
+        grad_fn_ = nullptr;
+        run_backward(root_fn, gradient);
     }
 }
 
