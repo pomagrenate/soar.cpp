@@ -8,7 +8,54 @@
 #include <fstream>
 #include <filesystem>
 
+namespace fs = std::filesystem;
+
 namespace soar::data {
+
+static bool is_image_file_ext(const std::string& ext) {
+    return (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".bmp" ||
+            ext == ".tiff" || ext == ".tif" || ext == ".npy" || ext == ".fits");
+}
+
+void COCODataset::index_images_dir(const std::string& dir) {
+    if (dir.empty() || !fs::exists(dir)) return;
+    try {
+        if (fs::is_directory(dir)) {
+            auto add_file = [&](const fs::path& p) {
+                std::string ext = p.extension().string();
+                std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c){ return std::tolower(c); });
+                if (is_image_file_ext(ext)) {
+                    std::string full_p = p.generic_string();
+                    std::string fname = p.filename().generic_string();
+                    std::string stem = p.stem().generic_string();
+                    file_map_[fname] = full_p;
+                    file_map_[stem] = full_p;
+                }
+            };
+
+            for (const auto& entry : fs::directory_iterator(dir)) {
+                if (entry.is_regular_file()) {
+                    add_file(entry.path());
+                } else if (entry.is_directory() && dir != "." && dir != "./") {
+                    std::string dname = entry.path().filename().string();
+                    if (dname == "train_images" || dname == "images" || dname == "train") {
+                        try {
+                            for (const auto& sub_entry : fs::directory_iterator(entry.path())) {
+                                if (sub_entry.is_regular_file()) {
+                                    add_file(sub_entry.path());
+                                    std::string sub_rel = dname + "/" + sub_entry.path().filename().generic_string();
+                                    file_map_[sub_rel] = sub_entry.path().generic_string();
+                                }
+                            }
+                        } catch (...) {}
+                    }
+                }
+            }
+        }
+    } catch (...) {
+        // Fallback gracefully
+    }
+}
 
 COCODataset::COCODataset(const std::string& images_dir,
                          const std::string& annotation_json_path,
@@ -17,9 +64,10 @@ COCODataset::COCODataset(const std::string& images_dir,
                          size_t target_width)
     : images_dir_(images_dir), desired_channels_(desired_channels),
       target_height_(target_height), target_width_(target_width) {
+    index_images_dir(images_dir_);
     parse_json(annotation_json_path);
-    SOAR_LOG_INFO("Loaded COCO dataset with {} images and {} annotated entries.",
-                  image_records_.size(), annotations_by_image_.size());
+    SOAR_LOG_INFO("Loaded COCO dataset with {} images, {} annotated entries, and {} indexed files.",
+                  image_records_.size(), annotations_by_image_.size(), file_map_.size());
 }
 
 void COCODataset::parse_json(const std::string& json_path) {
@@ -84,12 +132,41 @@ DatasetSample COCODataset::get_sample(size_t index) const {
 
     const auto& rec = image_records_[index];
     std::string img_path;
+    
+    // Check direct path first
+    std::string candidate;
     if (images_dir_.empty() || images_dir_ == ".") {
-        img_path = rec.file_name;
+        candidate = rec.file_name;
     } else if (images_dir_.back() == '/' || images_dir_.back() == '\\') {
-        img_path = images_dir_ + rec.file_name;
+        candidate = images_dir_ + rec.file_name;
     } else {
-        img_path = images_dir_ + "/" + rec.file_name;
+        candidate = images_dir_ + "/" + rec.file_name;
+    }
+
+    if (fs::exists(candidate)) {
+        img_path = candidate;
+    } else if (fs::exists(rec.file_name)) {
+        img_path = rec.file_name;
+    } else {
+        // Search in pre-indexed file_map_
+        auto it = file_map_.find(rec.file_name);
+        if (it != file_map_.end()) {
+            img_path = it->second;
+        } else {
+            std::string fname = fs::path(rec.file_name).filename().generic_string();
+            auto it2 = file_map_.find(fname);
+            if (it2 != file_map_.end()) {
+                img_path = it2->second;
+            } else {
+                std::string stem = fs::path(rec.file_name).stem().generic_string();
+                auto it3 = file_map_.find(stem);
+                if (it3 != file_map_.end()) {
+                    img_path = it3->second;
+                } else {
+                    img_path = candidate;
+                }
+            }
+        }
     }
 
     DatasetSample sample;

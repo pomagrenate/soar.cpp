@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 #include <map>
+#include <unordered_map>
 
 namespace soar::data {
 
@@ -51,8 +52,10 @@ private:
 
     std::vector<ImageRecord> image_records_;
     std::map<uint64_t, std::vector<AnnotationRecord>> annotations_by_image_;
+    std::unordered_map<std::string, std::string> file_map_;
 
     void parse_json(const std::string& json_path);
+    void index_images_dir(const std::string& dir);
 };
 
 } // namespace soar::data

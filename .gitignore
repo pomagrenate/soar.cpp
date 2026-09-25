@@ -1,7 +1,7 @@
 # Datasets & Caches
-data/
-datasets/
-cache/
+/data/
+/datasets/
+/cache/
 *.npy
 *.npz
 *.fits

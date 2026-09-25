@@ -49,22 +49,18 @@ StepMetrics Trainer::train_step(const TensorPtr& images, const TensorPtr& masks,
     model_->train(true);
 
     images->set_requires_grad(false);
-    std::cout << "    [train_step] Starting forward pass..." << std::endl;
     TensorPtr logits = model_->forward(images);
 
-    std::cout << "    [train_step] Forward done. Computing loss..." << std::endl;
     float bce_l = 0.0f;
     float dice_l = 0.0f;
     TensorPtr loss = loss_fn_.forward(logits, masks, bce_l, dice_l);
 
-    std::cout << "    [train_step] Loss done (" << loss->item() << "). Starting backward..." << std::endl;
     // Virtual batch scaling via gradient accumulation (loss / accumulate_grad_batches)
     float scale = 1.0f / static_cast<float>(accumulate_grad_batches_);
     TensorPtr grad_out = Tensor::create({1});
     grad_out->item() = scale;
     loss->backward(grad_out);
 
-    std::cout << "    [train_step] Backward done. Optimizer step..." << std::endl;
     if (!is_accumulating) {
         optimizer_.clip_grad_norm(grad_clip_);
         optimizer_.step();

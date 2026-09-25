@@ -91,7 +91,7 @@ void print_usage() {
               << "  --accumulate-grad-batches <K> Virtual gradient accumulation steps (default: 1)\n"
               << "  --val-split <float>           Validation split ratio (default: 0.1)\n"
               << "  --grad-clip <float>           Gradient clipping max norm (default: 2.0)\n"
-              << "  --pos-weight <float>          BCE positive class weight for imbalance (default: 3.0)\n"
+              << "  --pos-weight <float>          BCE positive class weight for imbalance (default: 1.0)\n"
               << "  --bce-weight <float>          BCE loss component weight (default: 1.0)\n"
               << "  --dice-weight <float>         Dice loss component weight (default: 1.0)\n"
               << "  --dice-smooth <float>         Dice loss smoothing epsilon (default: 1.0)\n"
@@ -108,49 +108,161 @@ void print_usage() {
               << std::endl;
 }
 
+static bool is_img_ext(const std::string& ext) {
+    return (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".bmp" ||
+            ext == ".tiff" || ext == ".tif" || ext == ".npy" || ext == ".fits");
+}
+
+static bool dir_contains_images(const std::string& dir) {
+    if (!fs::exists(dir) || !fs::is_directory(dir)) return false;
+    try {
+        for (const auto& entry : fs::directory_iterator(dir)) {
+            if (entry.is_regular_file()) {
+                std::string ext = entry.path().extension().string();
+                std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c){ return std::tolower(c); });
+                if (is_img_ext(ext)) return true;
+            }
+        }
+    } catch (...) {}
+    return false;
+}
+
+static bool dir_contains_yolo_labels(const std::string& dir) {
+    if (!fs::exists(dir) || !fs::is_directory(dir)) return false;
+    try {
+        for (const auto& entry : fs::directory_iterator(dir)) {
+            if (entry.is_regular_file()) {
+                std::string ext = entry.path().extension().string();
+                std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c){ return std::tolower(c); });
+                if (ext == ".txt") return true;
+            }
+        }
+    } catch (...) {}
+    return false;
+}
+
 // Resolve dataset directory helpers
 void auto_detect_dataset_paths(const std::string& data_root,
                                std::string& images_dir,
                                std::string& annotation_file,
                                std::string& labels_dir,
                                std::string& data_format) {
-    if (data_root.empty() || !file_exists(data_root)) return;
+    if (data_root.empty() && images_dir.empty()) return;
 
-    if (images_dir.empty()) {
-        std::string cand = path_join(data_root, "images");
-        if (file_exists(cand)) {
-            images_dir = cand;
-        } else {
-            images_dir = data_root;
+    // 1. Resolve images_dir
+    if (images_dir.empty() && !data_root.empty() && fs::exists(data_root)) {
+        std::vector<std::string> candidate_img_dirs = {
+            path_join(path_join(data_root, "train"), "train_images"),
+            path_join(data_root, "train_images"),
+            path_join(path_join(data_root, "train"), "images"),
+            path_join(data_root, "images"),
+            path_join(data_root, "train"),
+            data_root
+        };
+        for (const auto& cand : candidate_img_dirs) {
+            if (dir_contains_images(cand)) {
+                images_dir = cand;
+                break;
+            }
+        }
+        // If not found in primary candidates, recursive search (up to 3 levels deep)
+        if (images_dir.empty() && fs::is_directory(data_root)) {
+            try {
+                for (const auto& entry : fs::recursive_directory_iterator(data_root, fs::directory_options::skip_permission_denied)) {
+                    if (entry.is_directory() && dir_contains_images(entry.path().generic_string())) {
+                        images_dir = entry.path().generic_string();
+                        break;
+                    }
+                }
+            } catch (...) {}
         }
     }
 
+    // 2. Resolve annotation_file (COCO)
     if (annotation_file.empty()) {
-        std::vector<std::string> search_dirs = {
-            path_join(data_root, "annotations"),
-            data_root
-        };
-        for (const auto& sdir : search_dirs) {
-            if (fs::exists(sdir) && fs::is_directory(sdir)) {
-                for (const auto& entry : fs::directory_iterator(sdir)) {
-                    std::string p = entry.path().generic_string();
-                    if (p.size() >= 5 && p.substr(p.size() - 5) == ".json") {
-                        annotation_file = p;
-                        data_format = "coco";
-                        break;
-                    }
+        std::vector<std::string> search_roots;
+        if (!data_root.empty() && fs::exists(data_root)) search_roots.push_back(data_root);
+        if (!images_dir.empty() && fs::exists(images_dir)) {
+            fs::path p(images_dir);
+            if (p.has_parent_path()) {
+                search_roots.push_back(p.parent_path().generic_string());
+                if (p.parent_path().has_parent_path()) {
+                    search_roots.push_back(p.parent_path().parent_path().generic_string());
+                }
+            }
+        }
+
+        // Check specific candidate filenames first
+        for (const auto& root : search_roots) {
+            std::vector<std::string> specific_cand_files = {
+                path_join(path_join(root, "train"), "MAGFiLO_1.0_Annotations_kaggle2026_train.json"),
+                path_join(root, "MAGFiLO_1.0_Annotations_kaggle2026_train.json"),
+                path_join(path_join(root, "train"), "annotations.json"),
+                path_join(root, "annotations.json"),
+                path_join(root, "train.json")
+            };
+            for (const auto& f : specific_cand_files) {
+                if (file_exists(f)) {
+                    annotation_file = f;
+                    data_format = "coco";
+                    break;
                 }
             }
             if (!annotation_file.empty()) break;
         }
+
+        // If not found, search candidate directories for any *.json
+        if (annotation_file.empty()) {
+            for (const auto& root : search_roots) {
+                std::vector<std::string> search_dirs = {
+                    path_join(root, "train"),
+                    path_join(root, "annotations"),
+                    root
+                };
+                for (const auto& sdir : search_dirs) {
+                    if (fs::exists(sdir) && fs::is_directory(sdir)) {
+                        for (const auto& entry : fs::directory_iterator(sdir)) {
+                            if (entry.is_regular_file()) {
+                                std::string ext = entry.path().extension().string();
+                                std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c){ return std::tolower(c); });
+                                if (ext == ".json") {
+                                    annotation_file = entry.path().generic_string();
+                                    data_format = "coco";
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    if (!annotation_file.empty()) break;
+                }
+                if (!annotation_file.empty()) break;
+            }
+        }
     }
 
-    if (labels_dir.empty()) {
-        std::string cand = path_join(data_root, "labels");
-        if (file_exists(cand)) {
-            labels_dir = cand;
-            if (annotation_file.empty()) data_format = "yolo";
+    // 3. Resolve labels_dir (YOLO)
+    if (labels_dir.empty() && !data_root.empty() && fs::exists(data_root)) {
+        std::vector<std::string> candidate_label_dirs = {
+            path_join(path_join(data_root, "train"), "labels"),
+            path_join(data_root, "labels"),
+            path_join(path_join(data_root, "train"), "train_labels"),
+            path_join(data_root, "train_labels")
+        };
+        for (const auto& cand : candidate_label_dirs) {
+            if (dir_contains_yolo_labels(cand)) {
+                labels_dir = cand;
+                if (annotation_file.empty()) data_format = "yolo";
+                break;
+            }
         }
+    }
+
+    if (!images_dir.empty() || !annotation_file.empty()) {
+        std::cout << "[SOAR Engine] Dataset auto-detection result:\n"
+                  << "  Images Directory: " << (images_dir.empty() ? "(none)" : images_dir) << "\n"
+                  << "  Annotations:      " << (annotation_file.empty() ? "(none)" : annotation_file) << "\n"
+                  << "  Labels Directory: " << (labels_dir.empty() ? "(none)" : labels_dir) << "\n"
+                  << "  Data Format:      " << data_format << std::endl;
     }
 }
 
@@ -186,7 +298,7 @@ int main(int argc, char* argv[]) {
     size_t accumulate_grad_batches = 1;
     float val_split = 0.1f;
     float grad_clip = 2.0f;
-    float pos_weight = 3.0f;
+    float pos_weight = 1.0f;
     float bce_weight = 1.0f;
     float dice_weight = 1.0f;
     float dice_smooth = 1.0f;
@@ -392,10 +504,8 @@ int main(int argc, char* argv[]) {
                           << " | LR: " << std::scientific << std::setprecision(2) << current_lr
                           << std::defaultfloat << std::endl;
 
-                // 5. Periodic Tabular Summary every 5 epochs or last epoch
-                if ((ep + 1) % 5 == 0 || (ep + 1) == epochs) {
-                    soar::engine::Validator::print_results(v_metrics, ep + 1, epochs, "Validation");
-                }
+                // 5. Periodic Tabular Summary every epoch (matching Python segres)
+                soar::engine::Validator::print_results(v_metrics, ep + 1, epochs, "Validation");
 
                 // 6. Checkpoint Management
                 if (v_metrics.loss < best_val_loss) {
