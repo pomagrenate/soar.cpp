@@ -24,6 +24,22 @@ include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/palloc/src
 )
 
+# Automatically initialize git submodules if palloc is missing
+if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/palloc/src/static.c")
+    message(STATUS "palloc submodule not found. Initializing git submodules...")
+    find_package(Git QUIET)
+    if(GIT_FOUND)
+        execute_process(
+            COMMAND ${GIT_EXECUTABLE} submodule update --init --recursive
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+            RESULT_VARIABLE GIT_SUBMOD_RESULT
+        )
+        if(NOT GIT_SUBMOD_RESULT EQUAL "0")
+            message(WARNING "Failed to automatically fetch git submodules. Please run 'git submodule update --init --recursive'")
+        endif()
+    endif()
+endif()
+
 # Build palloc library
 set(PALLOC_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/palloc/src/static.c
