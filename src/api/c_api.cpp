@@ -82,13 +82,13 @@ SOAR_API int soar_train_step(void* handle,
         auto* h = static_cast<SoarModelHandle*>(handle);
         h->trainer->optimizer().set_lr(learning_rate);
 
-        auto img_tensor = soar::Tensor::from_blob({static_cast<size_t>(channels),
-                                                   static_cast<size_t>(height),
-                                                   static_cast<size_t>(width)},
+        auto img_tensor = soar::Tensor::from_blob({static_cast<int64_t>(channels),
+                                                   static_cast<int64_t>(height),
+                                                   static_cast<int64_t>(width)},
                                                   image_data);
         auto msk_tensor = soar::Tensor::from_blob({1,
-                                                   static_cast<size_t>(height),
-                                                   static_cast<size_t>(width)},
+                                                   static_cast<int64_t>(height),
+                                                   static_cast<int64_t>(width)},
                                                   mask_data);
 
         auto metrics = h->trainer->train_step(img_tensor, msk_tensor);
@@ -112,9 +112,9 @@ SOAR_API int soar_predict(void* handle,
     if (!handle || !image_data) return -1;
     try {
         auto* h = static_cast<SoarModelHandle*>(handle);
-        auto img_tensor = soar::Tensor::from_blob({static_cast<size_t>(channels),
-                                                   static_cast<size_t>(height),
-                                                   static_cast<size_t>(width)},
+        auto img_tensor = soar::Tensor::from_blob({static_cast<int64_t>(channels),
+                                                   static_cast<int64_t>(height),
+                                                   static_cast<int64_t>(width)},
                                                   image_data);
 
         soar::engine::Predictor predictor(h->model, threshold);

@@ -214,7 +214,7 @@ TensorPtr concat_channels(const std::vector<TensorPtr>& tensors) {
         if (t->requires_grad()) req_grad = true;
     }
 
-    TensorPtr output = Tensor::create({total_c, H, W}, req_grad);
+    TensorPtr output = Tensor::create({static_cast<int64_t>(total_c), static_cast<int64_t>(H), static_cast<int64_t>(W)}, req_grad);
     float* out_data = output->data();
 
     size_t c_offset = 0;

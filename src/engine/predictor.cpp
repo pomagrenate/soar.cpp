@@ -14,8 +14,6 @@ std::string Predictor::encode_rle(const uint8_t* mask, size_t height, size_t wid
     size_t run_start = 0;
     size_t run_len = 0;
 
-    size_t total_pixels = height * width;
-
     for (size_t x = 0; x < width; ++x) {
         for (size_t y = 0; y < height; ++y) {
             size_t row_major_idx = y * width + x;
@@ -58,7 +56,7 @@ PredictionResult Predictor::predict(const TensorPtr& input_image) {
     size_t n = H * W;
 
     PredictionResult result;
-    result.probabilities = Tensor::create({1, H, W});
+    result.probabilities = Tensor::create({1, static_cast<int64_t>(H), static_cast<int64_t>(W)});
     result.binary_mask.resize(n, 0);
 
     const float* z = logits->data();

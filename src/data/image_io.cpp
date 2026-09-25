@@ -25,7 +25,7 @@ TensorPtr ImageIO::load(const std::string& path, int desired_channels) {
     size_t H = static_cast<size_t>(h);
     size_t W = static_cast<size_t>(w);
 
-    TensorPtr tensor = Tensor::create({C, H, W});
+    TensorPtr tensor = Tensor::create({static_cast<int64_t>(C), static_cast<int64_t>(H), static_cast<int64_t>(W)});
     float* tensor_data = tensor->data();
 
     // Convert interleaved HWC unsigned char to planar CHW float normalized to [0, 1]

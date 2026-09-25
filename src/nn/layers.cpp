@@ -154,7 +154,10 @@ Conv2d::Conv2d(size_t in_channels, size_t out_channels, size_t kernel_size,
       dilation_(dilation), groups_(groups), has_bias_(bias) {
 
     size_t weight_c_in = in_channels / groups;
-    weight_ = Tensor::create({out_channels, weight_c_in, kernel_size, kernel_size}, true);
+    weight_ = Tensor::create({static_cast<int64_t>(out_channels),
+                               static_cast<int64_t>(weight_c_in),
+                               static_cast<int64_t>(kernel_size),
+                               static_cast<int64_t>(kernel_size)}, true);
 
     // Kaiming uniform initialization
     float fan_in = static_cast<float>(weight_c_in * kernel_size * kernel_size);
@@ -168,7 +171,7 @@ Conv2d::Conv2d(size_t in_channels, size_t out_channels, size_t kernel_size,
     register_parameter("weight", weight_);
 
     if (has_bias_) {
-        bias_ = Tensor::create({out_channels}, true);
+        bias_ = Tensor::create({static_cast<int64_t>(out_channels)}, true);
         bias_->zero_();
         register_parameter("bias", bias_);
     }
@@ -182,7 +185,9 @@ TensorPtr Conv2d::forward(const TensorPtr& input) {
     size_t H_out = (H_in + 2 * padding_ - effective_k) / stride_ + 1;
     size_t W_out = (W_in + 2 * padding_ - effective_k) / stride_ + 1;
 
-    TensorPtr output = Tensor::create({out_channels_, H_out, W_out},
+    TensorPtr output = Tensor::create({static_cast<int64_t>(out_channels_),
+                                       static_cast<int64_t>(H_out),
+                                       static_cast<int64_t>(W_out)},
                                       input->requires_grad() || weight_->requires_grad());
 
     const float* x = input->data();
@@ -375,8 +380,8 @@ struct GroupNormNode : public AutogradNode {
 GroupNorm::GroupNorm(size_t num_groups, size_t num_channels, float eps, bool affine)
     : Module("GroupNorm"), num_groups_(num_groups), num_channels_(num_channels), eps_(eps), affine_(affine) {
     if (affine_) {
-        weight_ = Tensor::ones({num_channels}, true);
-        bias_ = Tensor::zeros({num_channels}, true);
+        weight_ = Tensor::ones({static_cast<int64_t>(num_channels)}, true);
+        bias_ = Tensor::zeros({static_cast<int64_t>(num_channels)}, true);
         register_parameter("weight", weight_);
         register_parameter("bias", bias_);
     }
@@ -570,7 +575,9 @@ TensorPtr PixelShuffle::forward(const TensorPtr& input) {
     size_t H_out = H_in * upscale_factor_;
     size_t W_out = W_in * upscale_factor_;
 
-    TensorPtr output = Tensor::create({C_out, H_out, W_out}, input->requires_grad());
+    TensorPtr output = Tensor::create({static_cast<int64_t>(C_out),
+                                       static_cast<int64_t>(H_out),
+                                       static_cast<int64_t>(W_out)}, input->requires_grad());
     const float* in_data = input->data();
     float* out_data = output->data();
 
@@ -663,7 +670,9 @@ TensorPtr Upsample::forward(const TensorPtr& input) {
     size_t H_out = static_cast<size_t>(std::round(H_in * scale_factor_));
     size_t W_out = static_cast<size_t>(std::round(W_in * scale_factor_));
 
-    TensorPtr output = Tensor::create({C, H_out, W_out}, input->requires_grad());
+    TensorPtr output = Tensor::create({static_cast<int64_t>(C),
+                                       static_cast<int64_t>(H_out),
+                                       static_cast<int64_t>(W_out)}, input->requires_grad());
     const float* in_data = input->data();
     float* out_data = output->data();
 
@@ -743,7 +752,7 @@ TensorPtr AdaptiveAvgPool2d::forward(const TensorPtr& input) {
     size_t H = input->dim(1);
     size_t W = input->dim(2);
 
-    TensorPtr output = Tensor::create({C, 1, 1}, input->requires_grad());
+    TensorPtr output = Tensor::create({static_cast<int64_t>(C), 1, 1}, input->requires_grad());
     const float* in_data = input->data();
     float* out_data = output->data();
 

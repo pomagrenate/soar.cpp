@@ -109,7 +109,7 @@ int main(int argc, char* argv[]) {
         constexpr size_t H = 2048;
         constexpr size_t W = 2048;
         std::cout << "[SOAR Engine] Benchmarking 2048x2048 resolution-preserving inference..." << std::endl;
-        auto input = soar::Tensor::randn({m_cfg.in_channels, H, W}, 0.5f, 0.2f);
+        auto input = soar::Tensor::randn({static_cast<int64_t>(m_cfg.in_channels), static_cast<int64_t>(H), static_cast<int64_t>(W)}, 0.5f, 0.2f);
         soar::engine::Predictor predictor(model, threshold);
 
         for (size_t s = 0; s < 3; ++s) {
@@ -161,7 +161,7 @@ int main(int argc, char* argv[]) {
             }
         } else {
             std::cout << "[SOAR Engine] No dataset path passed. Running synthetic training steps..." << std::endl;
-            auto img = soar::Tensor::randn({m_cfg.in_channels, 64, 64}, 0.5f, 0.2f);
+            auto img = soar::Tensor::randn({static_cast<int64_t>(m_cfg.in_channels), 64, 64}, 0.5f, 0.2f);
             auto msk = soar::Tensor::zeros({1, 64, 64});
             for (size_t i = 0; i < msk->numel(); i += 2) msk->data()[i] = 1.0f;
 

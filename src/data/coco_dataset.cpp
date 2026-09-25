@@ -82,7 +82,7 @@ DatasetSample COCODataset::get_sample(size_t index) const {
     sample.orig_height = H;
     sample.orig_width = W;
 
-    sample.mask = Tensor::zeros({1, H, W});
+    sample.mask = Tensor::zeros({1, static_cast<int64_t>(H), static_cast<int64_t>(W)});
     float* mask_data = sample.mask->data();
 
     auto it = annotations_by_image_.find(rec.id);

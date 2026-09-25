@@ -5,6 +5,7 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 # Optimization flags
 if(MSVC)
@@ -50,8 +51,9 @@ target_include_directories(palloc_static PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/palloc/include
     ${CMAKE_CURRENT_SOURCE_DIR}/palloc/src
 )
+set_target_properties(palloc_static PROPERTIES POSITION_INDEPENDENT_CODE ON)
 if(NOT MSVC)
-    target_compile_options(palloc_static PRIVATE -Wno-attributes -Wno-unused-variable)
+    target_compile_options(palloc_static PRIVATE -Wno-attributes -Wno-unused-variable -Wno-type-limits)
 endif()
 
 # Core SOAR library sources
