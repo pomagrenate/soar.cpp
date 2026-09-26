@@ -233,6 +233,72 @@ void COCODataset::parse_json(const std::string& json_path) {
             }
         }
     }
+
+    // Pre-resolve file paths and matched annotations once for all image records
+    for (auto& rec : image_records_) {
+        std::string candidate;
+        if (images_dir_.empty() || images_dir_ == ".") {
+            candidate = rec.file_name;
+        } else if (images_dir_.back() == '/' || images_dir_.back() == '\\') {
+            candidate = images_dir_ + rec.file_name;
+        } else {
+            candidate = images_dir_ + "/" + rec.file_name;
+        }
+
+        if (fs::exists(candidate)) {
+            rec.resolved_path = candidate;
+        } else if (fs::exists(rec.file_name)) {
+            rec.resolved_path = rec.file_name;
+        } else {
+            auto it = file_map_.find(rec.file_name);
+            if (it != file_map_.end()) {
+                rec.resolved_path = it->second;
+            } else {
+                std::string fname = fs::path(rec.file_name).filename().generic_string();
+                auto it2 = file_map_.find(fname);
+                if (it2 != file_map_.end()) {
+                    rec.resolved_path = it2->second;
+                } else {
+                    std::string stem = fs::path(rec.file_name).stem().generic_string();
+                    auto it3 = file_map_.find(stem);
+                    if (it3 != file_map_.end()) {
+                        rec.resolved_path = it3->second;
+                    } else {
+                        rec.resolved_path = candidate;
+                    }
+                }
+            }
+        }
+
+        // Pre-match annotations once
+        auto it_key = annotations_by_key_.find(rec.file_name);
+        if (it_key != annotations_by_key_.end()) {
+            rec.matched_ann_indices = it_key->second;
+        } else {
+            std::string bname = fs::path(rec.file_name).filename().generic_string();
+            it_key = annotations_by_key_.find(bname);
+            if (it_key != annotations_by_key_.end()) {
+                rec.matched_ann_indices = it_key->second;
+            } else {
+                std::string stem = fs::path(rec.file_name).stem().generic_string();
+                it_key = annotations_by_key_.find(stem);
+                if (it_key != annotations_by_key_.end()) {
+                    rec.matched_ann_indices = it_key->second;
+                } else if (!rec.str_id.empty()) {
+                    it_key = annotations_by_key_.find(rec.str_id);
+                    if (it_key != annotations_by_key_.end()) {
+                        rec.matched_ann_indices = it_key->second;
+                    }
+                }
+            }
+        }
+        if (rec.matched_ann_indices.empty()) {
+            auto it = annotations_by_image_.find(rec.id);
+            if (it != annotations_by_image_.end()) {
+                rec.matched_ann_indices = it->second;
+            }
+        }
+    }
 }
 
 DatasetSample COCODataset::get_sample(size_t index) const {
@@ -241,44 +307,6 @@ DatasetSample COCODataset::get_sample(size_t index) const {
     }
 
     const auto& rec = image_records_[index];
-    std::string img_path;
-    
-    // Check direct path first
-    std::string candidate;
-    if (images_dir_.empty() || images_dir_ == ".") {
-        candidate = rec.file_name;
-    } else if (images_dir_.back() == '/' || images_dir_.back() == '\\') {
-        candidate = images_dir_ + rec.file_name;
-    } else {
-        candidate = images_dir_ + "/" + rec.file_name;
-    }
-
-    if (fs::exists(candidate)) {
-        img_path = candidate;
-    } else if (fs::exists(rec.file_name)) {
-        img_path = rec.file_name;
-    } else {
-        // Search in pre-indexed file_map_
-        auto it = file_map_.find(rec.file_name);
-        if (it != file_map_.end()) {
-            img_path = it->second;
-        } else {
-            std::string fname = fs::path(rec.file_name).filename().generic_string();
-            auto it2 = file_map_.find(fname);
-            if (it2 != file_map_.end()) {
-                img_path = it2->second;
-            } else {
-                std::string stem = fs::path(rec.file_name).stem().generic_string();
-                auto it3 = file_map_.find(stem);
-                if (it3 != file_map_.end()) {
-                    img_path = it3->second;
-                } else {
-                    img_path = candidate;
-                }
-            }
-        }
-    }
-
     size_t orig_h = rec.height;
     size_t orig_w = rec.width;
     size_t out_h = (target_height_ > 0) ? target_height_ : orig_h;
@@ -287,7 +315,7 @@ DatasetSample COCODataset::get_sample(size_t index) const {
     DatasetSample sample;
     sample.filename = rec.file_name;
     sample.image_id = rec.id;
-    sample.image = ImageIO::load(img_path, desired_channels_, out_h, out_w);
+    sample.image = ImageIO::load(rec.resolved_path, desired_channels_, out_h, out_w);
 
     if (orig_h == 0 || orig_w == 0) {
         orig_h = sample.image->dim(1);
@@ -304,30 +332,8 @@ DatasetSample COCODataset::get_sample(size_t index) const {
     sample.mask = Tensor::zeros({1, static_cast<int64_t>(out_h), static_cast<int64_t>(out_w)});
     float* mask_data = sample.mask->data();
 
-    const std::vector<size_t>* matched_ann_indices = nullptr;
-    auto it_key = annotations_by_key_.find(rec.file_name);
-    if (it_key != annotations_by_key_.end()) {
-        matched_ann_indices = &it_key->second;
-    } else {
-        std::string bname = fs::path(rec.file_name).filename().generic_string();
-        it_key = annotations_by_key_.find(bname);
-        if (it_key != annotations_by_key_.end()) {
-            matched_ann_indices = &it_key->second;
-        } else {
-            std::string stem = fs::path(rec.file_name).stem().generic_string();
-            it_key = annotations_by_key_.find(stem);
-            if (it_key != annotations_by_key_.end()) {
-                matched_ann_indices = &it_key->second;
-            } else if (!rec.str_id.empty()) {
-                it_key = annotations_by_key_.find(rec.str_id);
-                if (it_key != annotations_by_key_.end()) {
-                    matched_ann_indices = &it_key->second;
-                }
-            }
-        }
-    }
-
-    auto rasterize_ann = [&](const AnnotationRecord& ann) {
+    for (size_t idx : rec.matched_ann_indices) {
+        const auto& ann = all_annotations_[idx];
         for (const auto& poly_coords : ann.polygons) {
             if (poly_coords.size() < 6) continue;
             std::vector<Point2D> pts;
@@ -336,19 +342,6 @@ DatasetSample COCODataset::get_sample(size_t index) const {
                 pts.push_back(Point2D{poly_coords[i] * scale_x, poly_coords[i + 1] * scale_y});
             }
             PolygonRasterizer::rasterize(mask_data, out_h, out_w, pts, 1.0f);
-        }
-    };
-
-    if (matched_ann_indices) {
-        for (size_t idx : *matched_ann_indices) {
-            rasterize_ann(all_annotations_[idx]);
-        }
-    } else {
-        auto it = annotations_by_image_.find(rec.id);
-        if (it != annotations_by_image_.end()) {
-            for (size_t idx : it->second) {
-                rasterize_ann(all_annotations_[idx]);
-            }
         }
     }
 

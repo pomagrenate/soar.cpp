@@ -2,6 +2,7 @@
 
 #include <soar/tensor/tensor.hpp>
 #include <soar/cuda/cuda_runtime.hpp>
+#include <soar/data/coco_dataset.hpp>
 #include <vector>
 #include <memory>
 #include <thread>
@@ -15,11 +16,12 @@
 #include <algorithm>
 #include <optional>
 #include <span>
+#include <cstring>
 
 namespace soar::data {
 
 struct DataLoaderOptions {
-    size_t batch_size{32};
+    size_t batch_size{1};
     size_t workers{4};
     size_t prefetch_factor{2};
     bool shuffle{true};
@@ -30,6 +32,7 @@ struct DataLoaderOptions {
 struct Batch {
     TensorPtr data{nullptr};
     TensorPtr target{nullptr};
+    std::vector<DatasetSample> samples{};
     size_t sequence_id{0};
     bool is_pinned{false};
 };
@@ -113,17 +116,45 @@ public:
 };
 
 /**
- * @brief High-throughput asynchronous prefetching DataLoader in C++20.
+ * @brief High-throughput asynchronous prefetching DataLoader mirroring PyTorch's architecture.
  *
- * Employs std::jthread worker pools, double-buffering, pinned host memory
- * (cudaHostAlloc), and deterministic sequencer to eliminate GPU starvation.
+ * Implements:
+ * - std::jthread worker pool for true multi-threaded parallel image loading and polygon rasterization
+ * - Asynchronous double-buffering via BoundedQueue to completely decouple disk I/O from GPU/CPU compute
+ * - Hardware pinned memory buffers (cudaHostAlloc) for zero-copy DMA streaming
+ * - Deterministic sequence ordering and epoch-level index shuffling
+ * - Support for both raw Dataset and Sample-based Datasets (COCODataset, YOLODataset)
  */
 class DataLoader {
 public:
-    DataLoader(std::shared_ptr<Dataset> dataset, DataLoaderOptions options = {})
-        : dataset_(std::move(dataset)), options_(options),
+    // Constructor for raw Dataset pointer or derived shared_ptr
+    template <typename T>
+        requires std::is_convertible_v<T*, Dataset*>
+    DataLoader(std::shared_ptr<T> dataset, DataLoaderOptions options = {})
+        : dataset_(std::static_pointer_cast<Dataset>(dataset)), options_(options),
           batch_queue_(std::max(size_t(2), options_.workers * options_.prefetch_factor)) {
-        init_sampler();
+        size_t n = dataset_ ? dataset_->size() : 0;
+        indices_.resize(n);
+        std::iota(indices_.begin(), indices_.end(), 0);
+    }
+
+    // Constructor adapter for COCODataset / YOLODataset or sample-based datasets with subset indices
+    template <typename SampleDataset>
+        requires (!std::is_convertible_v<SampleDataset, std::shared_ptr<Dataset>>)
+    DataLoader(const SampleDataset& ds, DataLoaderOptions options = {}, std::vector<size_t> subset_indices = {})
+        : options_(options),
+          batch_queue_(std::max(size_t(2), options_.workers * options_.prefetch_factor)) {
+        if (subset_indices.empty()) {
+            indices_.resize(ds.size());
+            std::iota(indices_.begin(), indices_.end(), 0);
+        } else {
+            indices_ = std::move(subset_indices);
+        }
+
+        // Capture sampler lambda
+        sample_fetcher_ = [&ds](size_t idx) -> DatasetSample {
+            return ds.get_sample(idx);
+        };
     }
 
     ~DataLoader() {
@@ -195,21 +226,19 @@ public:
     }
 
     [[nodiscard]] size_t total_batches() const {
-        if (!dataset_) return 0;
-        size_t n = dataset_->size();
+        size_t n = indices_.size();
+        if (n == 0) return 0;
         if (options_.drop_last) {
             return n / options_.batch_size;
         }
         return (n + options_.batch_size - 1) / options_.batch_size;
     }
 
-private:
-    void init_sampler() {
-        size_t n = dataset_ ? dataset_->size() : 0;
-        indices_.resize(n);
-        std::iota(indices_.begin(), indices_.end(), 0);
+    [[nodiscard]] size_t total_samples() const {
+        return indices_.size();
     }
 
+private:
     void start_workers() {
         shutdown();
         batch_queue_.reset();
@@ -221,7 +250,7 @@ private:
             std::shuffle(indices_.begin(), indices_.end(), g);
         }
 
-        // Divide batch tasks into requests
+        // Divide sample indices into batch requests
         size_t n_samples = indices_.size();
         size_t bsz = options_.batch_size;
         batch_requests_.clear();
@@ -272,43 +301,86 @@ private:
             const auto& req = batch_requests_[req_idx];
             size_t actual_bsz = req.indices.size();
 
-            auto item_data_shape = dataset_->data_shape();
-            auto item_target_shape = dataset_->target_shape();
-
-            // Construct full batch shapes: [batch_size, dims...]
-            std::vector<int64_t> batch_data_dims{static_cast<int64_t>(actual_bsz)};
-            for (size_t d = 0; d < item_data_shape.ndim(); ++d) {
-                batch_data_dims.push_back(item_data_shape[d]);
-            }
-            core::Shape batch_data_shape(batch_data_dims);
-
-            std::vector<int64_t> batch_target_dims{static_cast<int64_t>(actual_bsz)};
-            for (size_t d = 0; d < item_target_shape.ndim(); ++d) {
-                batch_target_dims.push_back(item_target_shape[d]);
-            }
-            core::Shape batch_target_shape(batch_target_dims);
-
-            auto data_tensor = Tensor::create(batch_data_shape, false);
-            auto target_tensor = Tensor::create(batch_target_shape, false);
-
-            size_t data_item_numel = item_data_shape.numel();
-            size_t target_item_numel = item_target_shape.numel();
-
-            float* data_ptr = data_tensor->data();
-            float* target_ptr = target_tensor->data();
-
-            for (size_t i = 0; i < actual_bsz; ++i) {
-                size_t sample_idx = req.indices[i];
-                std::span<float> item_data_span(data_ptr + i * data_item_numel, data_item_numel);
-                std::span<float> item_target_span(target_ptr + i * target_item_numel, target_item_numel);
-                dataset_->get_item(sample_idx, item_data_span, item_target_span);
-            }
-
             Batch b;
-            b.data = std::move(data_tensor);
-            b.target = std::move(target_tensor);
             b.sequence_id = req.sequence_id;
             b.is_pinned = options_.pin_memory;
+
+            if (sample_fetcher_) {
+                // Fetch samples via worker thread closure
+                std::vector<DatasetSample> samples;
+                samples.reserve(actual_bsz);
+                for (size_t i = 0; i < actual_bsz; ++i) {
+                    samples.push_back(sample_fetcher_(req.indices[i]));
+                }
+
+                if (actual_bsz == 1) {
+                    // Optimized single-sample path (zero-copy forward to model)
+                    b.data = samples[0].image;
+                    b.target = samples[0].mask;
+                    b.samples = std::move(samples);
+                } else {
+                    // Collate multiple samples into 4D batched tensors [B, C, H, W]
+                    size_t C = samples[0].image->dim(0);
+                    size_t H = samples[0].image->dim(1);
+                    size_t W = samples[0].image->dim(2);
+                    size_t item_numel = C * H * W;
+
+                    b.data = Tensor::create({static_cast<int64_t>(actual_bsz),
+                                            static_cast<int64_t>(C),
+                                            static_cast<int64_t>(H),
+                                            static_cast<int64_t>(W)}, false);
+
+                    b.target = Tensor::create({static_cast<int64_t>(actual_bsz),
+                                              1,
+                                              static_cast<int64_t>(H),
+                                              static_cast<int64_t>(W)}, false);
+
+                    float* dst_img = b.data->data();
+                    float* dst_msk = b.target->data();
+                    size_t mask_item_numel = H * W;
+
+                    for (size_t i = 0; i < actual_bsz; ++i) {
+                        std::memcpy(dst_img + i * item_numel, samples[i].image->data(), item_numel * sizeof(float));
+                        std::memcpy(dst_msk + i * mask_item_numel, samples[i].mask->data(), mask_item_numel * sizeof(float));
+                    }
+                    b.samples = std::move(samples);
+                }
+            } else if (dataset_) {
+                // Fetch via abstract Dataset get_item
+                auto item_data_shape = dataset_->data_shape();
+                auto item_target_shape = dataset_->target_shape();
+
+                std::vector<int64_t> batch_data_dims{static_cast<int64_t>(actual_bsz)};
+                for (size_t d = 0; d < item_data_shape.ndim(); ++d) {
+                    batch_data_dims.push_back(item_data_shape[d]);
+                }
+                core::Shape batch_data_shape(batch_data_dims);
+
+                std::vector<int64_t> batch_target_dims{static_cast<int64_t>(actual_bsz)};
+                for (size_t d = 0; d < item_target_shape.ndim(); ++d) {
+                    batch_target_dims.push_back(item_target_shape[d]);
+                }
+                core::Shape batch_target_shape(batch_target_dims);
+
+                auto data_tensor = Tensor::create(batch_data_shape, false);
+                auto target_tensor = Tensor::create(batch_target_shape, false);
+
+                size_t data_item_numel = item_data_shape.numel();
+                size_t target_item_numel = item_target_shape.numel();
+
+                float* data_ptr = data_tensor->data();
+                float* target_ptr = target_tensor->data();
+
+                for (size_t i = 0; i < actual_bsz; ++i) {
+                    size_t sample_idx = req.indices[i];
+                    std::span<float> item_data_span(data_ptr + i * data_item_numel, data_item_numel);
+                    std::span<float> item_target_span(target_ptr + i * target_item_numel, target_item_numel);
+                    dataset_->get_item(sample_idx, item_data_span, item_target_span);
+                }
+
+                b.data = std::move(data_tensor);
+                b.target = std::move(target_tensor);
+            }
 
             batch_queue_.push(std::move(b));
         }
@@ -323,7 +395,8 @@ private:
         return batch_queue_.pop();
     }
 
-    std::shared_ptr<Dataset> dataset_;
+    std::shared_ptr<Dataset> dataset_{nullptr};
+    std::function<DatasetSample(size_t)> sample_fetcher_{nullptr};
     DataLoaderOptions options_;
     std::vector<size_t> indices_;
     std::vector<BatchRequest> batch_requests_;
@@ -334,5 +407,13 @@ private:
     BoundedQueue<Batch> batch_queue_;
     std::vector<std::jthread> workers_;
 };
+
+template <typename DatasetType>
+inline DataLoader make_data_loader(
+    const DatasetType& dataset,
+    DataLoaderOptions options = {},
+    std::vector<size_t> subset_indices = {}) {
+    return DataLoader(dataset, options, std::move(subset_indices));
+}
 
 } // namespace soar::data

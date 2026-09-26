@@ -9,6 +9,7 @@
 #include <soar/data/image_io.hpp>
 #include <soar/data/coco_dataset.hpp>
 #include <soar/data/yolo_dataset.hpp>
+#include <soar/data/dataloader.hpp>
 #include <soar/vulkan/context.hpp>
 #include "palloc.h"
 
@@ -487,29 +488,36 @@ int main(int argc, char* argv[]) {
             std::vector<size_t> train_indices(indices.begin(), indices.begin() + train_count);
             std::vector<size_t> val_indices(indices.begin() + train_count, indices.end());
 
+            size_t n_workers = std::thread::hardware_concurrency() > 0 ? std::min(size_t(8), (size_t)std::thread::hardware_concurrency()) : 4;
+            soar::data::DataLoaderOptions loader_opts;
+            loader_opts.batch_size = 1;
+            loader_opts.workers = n_workers;
+            loader_opts.prefetch_factor = 4;
+            loader_opts.shuffle = true;
+            loader_opts.pin_memory = true;
+
+            soar::data::DataLoader train_loader(ds, loader_opts, train_indices);
+
             std::cout << "[SOAR Engine] Dataset loaded: " << total_samples << " total ("
-                      << train_count << " train, " << val_count << " val)" << std::endl;
+                      << train_count << " train, " << val_count << " val) | Asynchronous DataLoader workers: " << n_workers << std::endl;
 
             for (size_t ep = 0; ep < epochs; ++ep) {
                 auto t0_ep = std::chrono::high_resolution_clock::now();
 
-                // 1. Training Phase
+                // 1. Training Phase (Asynchronous Multi-Threaded Prefetched Pipeline)
                 double ep_train_loss = 0.0;
                 double ep_train_dice = 0.0;
                 double ep_train_iou = 0.0;
+                size_t step_idx = 0;
 
-                std::shuffle(train_indices.begin(), train_indices.end(), g);
-
-                for (size_t i = 0; i < train_count; ++i) {
-                    size_t s_idx = train_indices[i];
-                    auto sample = ds.get_sample(s_idx);
-
-                    bool is_accumulating = ((i + 1) % accumulate_grad_batches != 0) && ((i + 1) != train_count);
-                    auto m = trainer.train_step(sample.image, sample.mask, is_accumulating);
+                for (const auto& batch : train_loader) {
+                    bool is_accumulating = ((step_idx + 1) % accumulate_grad_batches != 0) && ((step_idx + 1) != train_count);
+                    auto m = trainer.train_step(batch.data, batch.target, is_accumulating);
 
                     ep_train_loss += m.loss;
                     ep_train_dice += m.dice_score;
                     ep_train_iou += m.iou_score;
+                    step_idx++;
 
                     if (!is_accumulating) {
                         ::pa_collect(false);

@@ -36,6 +36,8 @@ private:
         uint64_t id{0};
         std::string str_id;
         std::string file_name;
+        std::string resolved_path;
+        std::vector<size_t> matched_ann_indices;
         size_t height{0};
         size_t width{0};
     };
