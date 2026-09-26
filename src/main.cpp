@@ -565,50 +565,80 @@ int main(int argc, char* argv[]) {
         std::cout << "[WARN] Config file '" << config_path << "' not found, using default Nano configuration." << std::endl;
     }
 
-    [[maybe_unused]] bool use_cuda = false;
+    bool use_cuda = false;
     std::unique_ptr<soar::vk::VulkanContext> vk_ctx;
 
-    if (device_str == "cuda") {
+    auto try_init_cuda = [&]() -> bool {
         int cuda_count = 0;
         if (soar::cuda::cudaGetDeviceCount(&cuda_count) == soar::cuda::cudaSuccess && cuda_count > 0) {
-            std::cout << "[SOAR Engine] Native CUDA device initialized: "
-                      << cuda_count << " GPU device(s) active." << std::endl;
+            std::cout << "\n=================================================================\n"
+                      << "  SOAR Native NVIDIA CUDA Accelerator Hardware Telemetry        \n"
+                      << "=================================================================\n"
+                      << "  Hardware Devices:      " << cuda_count << " NVIDIA GPU(s) detected\n";
+            for (int dev = 0; dev < cuda_count; ++dev) {
+                soar::cuda::cudaDeviceProp prop{};
+                if (soar::cuda::cudaGetDeviceProperties(&prop, dev) == soar::cuda::cudaSuccess) {
+                    double vram_gb = static_cast<double>(prop.totalGlobalMem) / (1024.0 * 1024.0 * 1024.0);
+                    std::cout << "  Device [" << dev << "]:             " << prop.name
+                              << " (SM " << prop.major << "." << prop.minor << ", "
+                              << std::fixed << std::setprecision(2) << vram_gb << " GB Dedicated VRAM)\n";
+                }
+            }
+            std::cout << "=================================================================\n\n";
             use_cuda = true;
-        } else {
-            std::cerr << "[FATAL] CUDA requested but no active device detected." << std::endl;
+            return true;
+        }
+        return false;
+    };
+
+    if (device_str == "cuda") {
+        if (!try_init_cuda()) {
+            std::cerr << "[FATAL] CUDA requested ('cuda') but no active NVIDIA CUDA device detected." << std::endl;
             return 1;
         }
-    } else if (device_str == "vulkan" || device_str == "vk" || device_str == "gpu") {
+    } else if (device_str == "gpu") {
+        // Priority 1: Check native NVIDIA CUDA hardware accelerator
+        if (!try_init_cuda()) {
+            // Priority 2: Physical Vulkan GPU
+            try {
+                vk_ctx = std::make_unique<soar::vk::VulkanContext>(false, /*allow_cpu_fallback=*/false);
+                run_vulkan_hardware_telemetry_and_sanity_probe(*vk_ctx);
+            } catch (const std::exception& e) {
+                std::cerr << "[FATAL] Physical GPU hardware acceleration requested ('gpu'), "
+                          << "but neither native CUDA nor physical Vulkan GPU hardware is available: " << e.what() << "\n"
+                          << "Execution terminated. Software/CPU emulation fallbacks are strictly prohibited." << std::endl;
+                return 1;
+            }
+        }
+    } else if (device_str == "vulkan" || device_str == "vk") {
         try {
             vk_ctx = std::make_unique<soar::vk::VulkanContext>(false, /*allow_cpu_fallback=*/false);
             run_vulkan_hardware_telemetry_and_sanity_probe(*vk_ctx);
-        } catch (const soar::HardwareNotFoundError& e) {
-            std::cerr << "[FATAL] Physical GPU hardware acceleration requested ('" << device_str << "'), "
-                      << "but no physical GPU hardware is available: " << e.what() << "\n"
-                      << "Execution terminated. Software/CPU emulation fallbacks are strictly prohibited." << std::endl;
-            return 1;
         } catch (const std::exception& e) {
-            std::cerr << "[FATAL] Physical GPU initialization failed: " << e.what() << std::endl;
+            std::cerr << "[FATAL] Physical Vulkan GPU initialization failed: " << e.what() << std::endl;
             return 1;
         }
     } else if (device_str == "auto") {
-        // Attempt physical Vulkan GPU first
-        try {
-            vk_ctx = std::make_unique<soar::vk::VulkanContext>(false, /*allow_cpu_fallback=*/false);
-            run_vulkan_hardware_telemetry_and_sanity_probe(*vk_ctx);
-        } catch (const std::exception& e) {
-            std::cout << "[SOAR Engine] Auto-detection: No compatible physical Vulkan GPU detected ("
-                      << e.what() << ").\n"
-                      << "[SOAR Engine] Selecting multi-threaded CPU OpenMP engine ("
-                      << std::thread::hardware_concurrency() << " concurrent threads active)." << std::endl;
-            vk_ctx.reset();
+        // Priority 1: Check native NVIDIA CUDA hardware accelerator
+        if (!try_init_cuda()) {
+            // Priority 2: Physical Vulkan GPU
+            try {
+                vk_ctx = std::make_unique<soar::vk::VulkanContext>(false, /*allow_cpu_fallback=*/false);
+                run_vulkan_hardware_telemetry_and_sanity_probe(*vk_ctx);
+            } catch (const std::exception& e) {
+                std::cout << "[SOAR Engine] Auto-detection: No compatible physical CUDA or Vulkan GPU detected ("
+                          << e.what() << ").\n"
+                          << "[SOAR Engine] Selecting multi-threaded CPU OpenMP engine ("
+                          << std::thread::hardware_concurrency() << " concurrent threads active)." << std::endl;
+                vk_ctx.reset();
+            }
         }
     } else if (device_str == "cpu") {
         std::cout << "[SOAR Engine] Hardware accelerator: Multi-threaded CPU OpenMP engine ("
                   << std::thread::hardware_concurrency() << " concurrent threads active)." << std::endl;
     } else {
         std::cerr << "[ERROR] Unknown device specified: '" << device_str
-                  << "'. Valid options are: auto, gpu, vulkan, cuda, cpu." << std::endl;
+                  << "'. Valid options are: auto, gpu, cuda, vulkan, cpu." << std::endl;
         return 1;
     }
 
@@ -621,7 +651,10 @@ int main(int argc, char* argv[]) {
         model->load_weights(weights_path);
     }
 
-    if (vk_ctx) {
+    if (use_cuda) {
+        model->to_cuda();
+        std::cout << "[SOAR Engine] Transferred all model parameters to NVIDIA CUDA device memory (VRAM)." << std::endl;
+    } else if (vk_ctx) {
         model->to_device(*vk_ctx);
     }
 
@@ -633,6 +666,9 @@ int main(int argc, char* argv[]) {
         size_t W = benchmark_w;
         std::cout << "[SOAR Engine] Benchmarking " << H << "x" << W << " native full-resolution inference..." << std::endl;
         auto input = soar::Tensor::randn({static_cast<int64_t>(m_cfg.in_channels), static_cast<int64_t>(H), static_cast<int64_t>(W)}, 0.5f, 0.2f);
+        if (use_cuda) {
+            input->to_cuda();
+        }
         soar::engine::Predictor predictor(model, threshold);
 
         for (size_t s = 0; s < 3; ++s) {

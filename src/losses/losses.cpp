@@ -1,4 +1,6 @@
 #include <soar/losses/losses.hpp>
+#include <soar/cuda/cuda_kernels.hpp>
+
 #include <soar/autograd/node.hpp>
 #include <soar/core/logging.hpp>
 
@@ -34,6 +36,16 @@ struct BCENode : public AutogradNode {
 
     void backward(const TensorPtr& grad_output) override {
         if (!logits || !logits->requires_grad()) return;
+        if (logits->is_cuda()) {
+            if (targets && !targets->is_cuda()) targets->to_cuda();
+            TensorPtr grad_z = Tensor::zeros(logits->shape(), false, true);
+            float go = grad_output->item();
+            soar::cuda::kernels::bce_with_logits_backward(
+                logits->cuda_data(), targets->cuda_data(), grad_z->cuda_data(),
+                go, weight, pos_weight, logits->numel());
+            propagate_grad(logits, grad_z);
+            return;
+        }
         TensorPtr grad_z = Tensor::zeros(logits->shape());
         const float* z = logits->data();
         const float* y = targets->data();
@@ -50,6 +62,9 @@ struct BCENode : public AutogradNode {
             gz[i] = (sig * w - pos_weight * y[i]) * scale;
         }
 
+        if (logits->is_cuda()) {
+            grad_z->to_cuda();
+        }
         propagate_grad(logits, grad_z);
     }
 
@@ -66,6 +81,8 @@ TensorPtr BCEWithLogitsLoss::forward(const TensorPtr& logits, const TensorPtr& t
     if (logits->shape() != targets->shape()) {
         throw ShapeError("BCEWithLogitsLoss: shape mismatch between logits and targets");
     }
+    if (logits->is_cuda()) logits->sync_to_host();
+    if (targets->is_cuda()) targets->sync_to_host();
 
     TensorPtr loss = Tensor::create({1}, logits->requires_grad());
     const float* z = logits->data();
@@ -159,6 +176,8 @@ TensorPtr DiceLoss::forward(const TensorPtr& logits, const TensorPtr& targets) {
     if (logits->shape() != targets->shape()) {
         throw ShapeError("DiceLoss: shape mismatch between logits and targets");
     }
+    if (logits->is_cuda()) logits->sync_to_host();
+    if (targets->is_cuda()) targets->sync_to_host();
 
     TensorPtr loss = Tensor::create({1}, logits->requires_grad());
     const float* z = logits->data();

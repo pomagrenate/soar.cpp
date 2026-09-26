@@ -83,6 +83,27 @@ else()
     message(STATUS "[Vulkan Compute] glslangValidator/glslc not found; using bundled precompiled SPIR-V headers.")
 endif()
 
+# CUDA Toolchain Check (Tesla T4 SM_75, P100 SM_60, etc.)
+include(CheckLanguage)
+if(NOT CMAKE_CUDA_COMPILER AND EXISTS "/usr/local/cuda/bin/nvcc")
+    set(CMAKE_CUDA_COMPILER "/usr/local/cuda/bin/nvcc")
+endif()
+check_language(CUDA)
+
+if(CMAKE_CUDA_COMPILER)
+    enable_language(CUDA)
+    set(CMAKE_CUDA_STANDARD 17)
+    set(CMAKE_CUDA_STANDARD_REQUIRED ON)
+    set(CMAKE_CUDA_ARCHITECTURES "60;70;75;80;86;89")
+    add_compile_definitions(SOAR_HAS_CUDA=1)
+    message(STATUS "[CUDA Compute] Found CUDA Compiler: ${CMAKE_CUDA_COMPILER}. Native CUDA kernels ENABLED.")
+    set(SOAR_CUDA_SOURCES src/cuda/kernels.cu)
+    find_package(CUDAToolkit)
+else()
+    message(STATUS "[CUDA Compute] nvcc not found; compiling with host CPU kernels & stub.")
+    set(SOAR_CUDA_SOURCES src/cuda/cuda_kernels_stub.cpp)
+endif()
+
 # Core SOAR library sources
 set(SOAR_SOURCES
     src/core/logging.cpp
@@ -108,6 +129,7 @@ set(SOAR_SOURCES
     src/cuda/cuda_stream.cpp
     src/cuda/cuda_event.cpp
     src/cuda/cuda_allocator.cpp
+    ${SOAR_CUDA_SOURCES}
     src/autograd/engine.cpp
     src/data/image_io.cpp
     src/data/coco_dataset.cpp
@@ -125,6 +147,9 @@ target_link_libraries(soar_core PUBLIC palloc_static)
 if(OpenMP_CXX_FOUND)
     target_link_libraries(soar_core PUBLIC OpenMP::OpenMP_CXX)
 endif()
+if(TARGET CUDA::cudart)
+    target_link_libraries(soar_core PUBLIC CUDA::cudart)
+endif()
 if(UNIX AND NOT APPLE)
     target_link_libraries(soar_core PUBLIC dl)
 endif()
@@ -138,6 +163,9 @@ add_library(soar_engine_shared SHARED ${SOAR_SOURCES})
 target_link_libraries(soar_engine_shared PUBLIC palloc_static)
 if(OpenMP_CXX_FOUND)
     target_link_libraries(soar_engine_shared PUBLIC OpenMP::OpenMP_CXX)
+endif()
+if(TARGET CUDA::cudart)
+    target_link_libraries(soar_engine_shared PUBLIC CUDA::cudart)
 endif()
 if(UNIX AND NOT APPLE)
     target_link_libraries(soar_engine_shared PUBLIC dl)

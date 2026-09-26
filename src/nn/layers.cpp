@@ -1,4 +1,6 @@
 #include <soar/nn/layers.hpp>
+#include <soar/cuda/cuda_kernels.hpp>
+
 #include <soar/autograd/node.hpp>
 #include <soar/core/logging.hpp>
 
@@ -30,6 +32,61 @@ struct Conv2dNode : public AutogradNode {
     }
 
     void backward(const TensorPtr& grad_output) override {
+        bool is_gpu = grad_output->is_cuda() || (input && input->is_cuda()) || (weight && weight->is_cuda());
+        if (is_gpu) {
+            if (!grad_output->is_cuda()) grad_output->to_cuda();
+            if (input && !input->is_cuda()) input->to_cuda();
+            if (weight && !weight->is_cuda()) weight->to_cuda();
+            if (bias && !bias->is_cuda()) bias->to_cuda();
+
+            size_t C_in = input->dim(0);
+            size_t H_in = input->dim(1);
+            size_t W_in = input->dim(2);
+            size_t C_out = weight->dim(0);
+            size_t K = weight->dim(2);
+            size_t H_out = grad_output->dim(1);
+            size_t W_out = grad_output->dim(2);
+
+            TensorPtr grad_b = nullptr;
+            TensorPtr grad_w = nullptr;
+            TensorPtr grad_x = nullptr;
+            float* gb = nullptr;
+            float* gw = nullptr;
+            float* gx = nullptr;
+
+            if (bias && bias->requires_grad()) {
+                grad_b = Tensor::zeros(bias->shape(), false, true);
+                gb = grad_b->cuda_data();
+            }
+            if (weight && weight->requires_grad()) {
+                grad_w = Tensor::zeros(weight->shape(), false, true);
+                gw = grad_w->cuda_data();
+            }
+            if (input && input->requires_grad()) {
+                grad_x = Tensor::zeros(input->shape(), false, true);
+                gx = grad_x->cuda_data();
+            }
+
+            if (groups == 1 && K == 1 && stride == 1 && padding == 0 && H_in == H_out && W_in == W_out) {
+                soar::cuda::kernels::conv2d_1x1_backward(
+                    grad_output->cuda_data(), input->cuda_data(), weight->cuda_data(),
+                    gx, gw, gb, C_in, C_out, H_out * W_out);
+            } else if (groups == C_in && C_in == C_out) {
+                soar::cuda::kernels::conv2d_dw_backward(
+                    grad_output->cuda_data(), input->cuda_data(), weight->cuda_data(),
+                    gx, gw, gb, C_in, H_in, W_in, H_out, W_out, K, padding, stride, dilation);
+            } else {
+                soar::cuda::kernels::conv2d_backward(
+                    grad_output->cuda_data(), input->cuda_data(), weight->cuda_data(),
+                    gx, gw, gb, C_in, C_out, H_in, W_in, H_out, W_out, K, padding, stride, dilation, groups);
+            }
+
+            if (grad_b) propagate_grad(bias, grad_b);
+            if (grad_w) propagate_grad(weight, grad_w);
+            if (grad_x) propagate_grad(input, grad_x);
+            return;
+        }
+
         const float* go = grad_output->data();
         const float* x = input->data();
         const float* w = weight->data();
@@ -274,10 +331,47 @@ TensorPtr Conv2d::forward(const TensorPtr& input) {
     size_t H_out = (H_in + 2 * padding_ - effective_k) / stride_ + 1;
     size_t W_out = (W_in + 2 * padding_ - effective_k) / stride_ + 1;
 
+    bool is_gpu = input->is_cuda() || weight_->is_cuda();
     TensorPtr output = Tensor::create({static_cast<int64_t>(out_channels_),
                                        static_cast<int64_t>(H_out),
                                        static_cast<int64_t>(W_out)},
-                                      input->requires_grad() || weight_->requires_grad());
+                                      input->requires_grad() || weight_->requires_grad(),
+                                      is_gpu);
+
+    if (is_gpu) {
+        if (!input->is_cuda()) input->to_cuda();
+        if (!weight_->is_cuda()) weight_->to_cuda();
+        if (has_bias_ && bias_ && !bias_->is_cuda()) bias_->to_cuda();
+
+        const float* x_cuda = input->cuda_data();
+        const float* w_cuda = weight_->cuda_data();
+        const float* b_cuda = (has_bias_ && bias_) ? bias_->cuda_data() : nullptr;
+        float* y_cuda = output->cuda_data();
+
+        if (groups_ == 1 && kernel_size_ == 1 && stride_ == 1 && padding_ == 0 && H_in == H_out && W_in == W_out) {
+            soar::cuda::kernels::conv2d_1x1_forward(x_cuda, w_cuda, b_cuda, y_cuda, in_channels_, out_channels_, H_out * W_out);
+        } else if (groups_ == in_channels_ && in_channels_ == out_channels_) {
+            soar::cuda::kernels::conv2d_dw_forward(x_cuda, w_cuda, b_cuda, y_cuda, in_channels_, H_in, W_in, H_out, W_out,
+                                                   kernel_size_, padding_, stride_, dilation_);
+        } else {
+            soar::cuda::kernels::conv2d_forward(x_cuda, w_cuda, b_cuda, y_cuda, in_channels_, out_channels_,
+                                                H_in, W_in, H_out, W_out,
+                                                kernel_size_, padding_, stride_, dilation_, groups_);
+        }
+
+        if (output->requires_grad()) {
+            auto node = std::make_shared<Conv2dNode>();
+            node->input = input;
+            node->weight = weight_;
+            node->bias = bias_;
+            node->stride = stride_;
+            node->padding = padding_;
+            node->dilation = dilation_;
+            node->groups = groups_;
+            output->set_grad_fn(node);
+        }
+        return output;
+    }
 
     const float* x = input->data();
     const float* w = weight_->data();
@@ -392,6 +486,8 @@ struct GroupNormNode : public AutogradNode {
     TensorPtr bias;
     std::vector<float> saved_mean;
     std::vector<float> saved_rstd;
+    TensorPtr cuda_mean{nullptr};
+    TensorPtr cuda_rstd{nullptr};
     size_t num_groups;
     float eps;
 
@@ -404,6 +500,48 @@ struct GroupNormNode : public AutogradNode {
     }
 
     void backward(const TensorPtr& grad_output) override {
+        bool is_gpu = grad_output->is_cuda() || (input && input->is_cuda());
+        if (is_gpu) {
+            if (!grad_output->is_cuda()) grad_output->to_cuda();
+            if (input && !input->is_cuda()) input->to_cuda();
+            if (weight && !weight->is_cuda()) weight->to_cuda();
+            if (bias && !bias->is_cuda()) bias->to_cuda();
+
+            size_t C = input->dim(0);
+            size_t H = input->dim(1);
+            size_t W = input->dim(2);
+
+            TensorPtr grad_w = nullptr;
+            TensorPtr grad_b = nullptr;
+            TensorPtr grad_x = nullptr;
+            float* gw = nullptr;
+            float* gb = nullptr;
+            float* gx = nullptr;
+
+            if (weight && weight->requires_grad()) {
+                grad_w = Tensor::zeros(weight->shape(), false, true);
+                grad_b = Tensor::zeros(bias->shape(), false, true);
+                gw = grad_w->cuda_data();
+                gb = grad_b->cuda_data();
+            }
+            if (input && input->requires_grad()) {
+                grad_x = Tensor::zeros(input->shape(), false, true);
+                gx = grad_x->cuda_data();
+            }
+
+            const float* gamma_ptr = weight ? weight->cuda_data() : nullptr;
+
+            soar::cuda::kernels::group_norm_backward(
+                grad_output->cuda_data(), input->cuda_data(), gamma_ptr,
+                cuda_mean->cuda_data(), cuda_rstd->cuda_data(),
+                gx, gw, gb, num_groups, C, H * W);
+
+            if (grad_w) propagate_grad(weight, grad_w);
+            if (grad_b) propagate_grad(bias, grad_b);
+            if (grad_x) propagate_grad(input, grad_x);
+            return;
+        }
+
         const float* go = grad_output->data();
         const float* x = input->data();
         const float* g = weight ? weight->data() : nullptr;
@@ -481,6 +619,8 @@ struct GroupNormNode : public AutogradNode {
 
     void release_variables() override {
         input = nullptr;
+        cuda_mean = nullptr;
+        cuda_rstd = nullptr;
         saved_mean.clear();
         saved_mean.shrink_to_fit();
         saved_rstd.clear();
@@ -504,6 +644,42 @@ TensorPtr GroupNorm::forward(const TensorPtr& input) {
     size_t W = input->dim(2);
     size_t c_per_g = C / num_groups_;
     size_t M = c_per_g * H * W;
+
+    bool is_gpu = input->is_cuda() || (affine_ && weight_->is_cuda());
+    if (is_gpu) {
+        if (!input->is_cuda()) input->to_cuda();
+        if (affine_) {
+            if (!weight_->is_cuda()) weight_->to_cuda();
+            if (!bias_->is_cuda()) bias_->to_cuda();
+        }
+
+        TensorPtr output = Tensor::create(input->shape(), input->requires_grad() || (affine_ && weight_->requires_grad()), true);
+        TensorPtr cuda_mean = Tensor::create({static_cast<int64_t>(num_groups_)}, false, true);
+        TensorPtr cuda_rstd = Tensor::create({static_cast<int64_t>(num_groups_)}, false, true);
+
+        const float* in_ptr = input->cuda_data();
+        const float* gamma_ptr = affine_ ? weight_->cuda_data() : nullptr;
+        const float* beta_ptr = affine_ ? bias_->cuda_data() : nullptr;
+        float* out_ptr = output->cuda_data();
+
+        soar::cuda::kernels::group_norm_forward(
+            in_ptr, gamma_ptr, beta_ptr, out_ptr,
+            cuda_mean->cuda_data(), cuda_rstd->cuda_data(),
+            num_groups_, C, H * W, eps_);
+
+        if (output->requires_grad()) {
+            auto node = std::make_shared<GroupNormNode>();
+            node->input = input;
+            node->weight = weight_;
+            node->bias = bias_;
+            node->cuda_mean = cuda_mean;
+            node->cuda_rstd = cuda_rstd;
+            node->num_groups = num_groups_;
+            node->eps = eps_;
+            output->set_grad_fn(node);
+        }
+        return output;
+    }
 
     TensorPtr output = Tensor::create(input->shape(), input->requires_grad() || (affine_ && weight_->requires_grad()));
     const float* x = input->data();
@@ -572,6 +748,15 @@ struct SiLUNode : public AutogradNode {
 
     void backward(const TensorPtr& grad_output) override {
         if (!input->requires_grad()) return;
+        if (grad_output->is_cuda() || input->is_cuda()) {
+            if (!grad_output->is_cuda()) grad_output->to_cuda();
+            if (!input->is_cuda()) input->to_cuda();
+            TensorPtr grad_x = Tensor::zeros(input->shape(), false, true);
+            soar::cuda::kernels::silu_backward(
+                grad_output->cuda_data(), input->cuda_data(), grad_x->cuda_data(), input->numel());
+            propagate_grad(input, grad_x);
+            return;
+        }
         TensorPtr grad_x = Tensor::zeros(input->shape());
         const float* x = input->data();
         const float* go = grad_output->data();
@@ -591,6 +776,16 @@ struct SiLUNode : public AutogradNode {
 };
 
 TensorPtr SiLU::forward(const TensorPtr& input) {
+    if (input->is_cuda()) {
+        TensorPtr output = Tensor::create(input->shape(), input->requires_grad(), true);
+        soar::cuda::kernels::silu_forward(input->cuda_data(), output->cuda_data(), input->numel());
+        if (input->requires_grad()) {
+            auto node = std::make_shared<SiLUNode>();
+            node->input = input;
+            output->set_grad_fn(node);
+        }
+        return output;
+    }
     TensorPtr output = Tensor::create(input->shape(), input->requires_grad());
     const float* x = input->data();
     float* y = output->data();
@@ -620,6 +815,15 @@ struct SigmoidNode : public AutogradNode {
 
     void backward(const TensorPtr& grad_output) override {
         if (!input->requires_grad()) return;
+        if (grad_output->is_cuda() || (output && output->is_cuda())) {
+            if (!grad_output->is_cuda()) grad_output->to_cuda();
+            if (!output->is_cuda()) output->to_cuda();
+            TensorPtr grad_x = Tensor::zeros(input->shape(), false, true);
+            soar::cuda::kernels::sigmoid_backward(
+                grad_output->cuda_data(), output->cuda_data(), grad_x->cuda_data(), input->numel());
+            propagate_grad(input, grad_x);
+            return;
+        }
         TensorPtr grad_x = Tensor::zeros(input->shape());
         const float* y = output->data();
         const float* go = grad_output->data();
@@ -638,6 +842,17 @@ struct SigmoidNode : public AutogradNode {
 };
 
 TensorPtr Sigmoid::forward(const TensorPtr& input) {
+    if (input->is_cuda()) {
+        TensorPtr output = Tensor::create(input->shape(), input->requires_grad(), true);
+        soar::cuda::kernels::sigmoid_forward(input->cuda_data(), output->cuda_data(), input->numel());
+        if (input->requires_grad()) {
+            auto node = std::make_shared<SigmoidNode>();
+            node->input = input;
+            node->output = output;
+            output->set_grad_fn(node);
+        }
+        return output;
+    }
     TensorPtr output = Tensor::create(input->shape(), input->requires_grad());
     const float* x = input->data();
     float* y = output->data();
@@ -668,6 +883,16 @@ struct PixelShuffleNode : public AutogradNode {
 
     void backward(const TensorPtr& grad_output) override {
         if (!input->requires_grad()) return;
+        if (grad_output->is_cuda() || input->is_cuda()) {
+            if (!grad_output->is_cuda()) grad_output->to_cuda();
+            if (!input->is_cuda()) input->to_cuda();
+            TensorPtr grad_x = Tensor::zeros(input->shape(), false, true);
+            soar::cuda::kernels::pixel_shuffle_backward(
+                grad_output->cuda_data(), grad_x->cuda_data(),
+                input->dim(0), input->dim(1), input->dim(2), r);
+            propagate_grad(input, grad_x);
+            return;
+        }
         TensorPtr grad_x = Tensor::zeros(input->shape());
         const float* go = grad_output->data();
         float* gx = grad_x->data();
@@ -714,6 +939,21 @@ TensorPtr PixelShuffle::forward(const TensorPtr& input) {
     size_t H_out = H_in * upscale_factor_;
     size_t W_out = W_in * upscale_factor_;
 
+    if (input->is_cuda()) {
+        TensorPtr output = Tensor::create({static_cast<int64_t>(C_out),
+                                           static_cast<int64_t>(H_out),
+                                           static_cast<int64_t>(W_out)},
+                                          input->requires_grad(), true);
+        soar::cuda::kernels::pixel_shuffle_forward(
+            input->cuda_data(), output->cuda_data(), C_in, H_in, W_in, upscale_factor_);
+        if (input->requires_grad()) {
+            auto node = std::make_shared<PixelShuffleNode>();
+            node->input = input;
+            node->r = upscale_factor_;
+            output->set_grad_fn(node);
+        }
+        return output;
+    }
     TensorPtr output = Tensor::create({static_cast<int64_t>(C_out),
                                        static_cast<int64_t>(H_out),
                                        static_cast<int64_t>(W_out)}, input->requires_grad());
@@ -759,6 +999,26 @@ struct UpsampleNode : public AutogradNode {
 
     void backward(const TensorPtr& grad_output) override {
         if (!input->requires_grad()) return;
+        if (grad_output->is_cuda() || input->is_cuda()) {
+            if (!grad_output->is_cuda()) grad_output->to_cuda();
+            if (!input->is_cuda()) input->to_cuda();
+            TensorPtr grad_x = Tensor::zeros(input->shape(), false, true);
+            size_t C = input->dim(0);
+            size_t H_in = input->dim(1);
+            size_t W_in = input->dim(2);
+            size_t H_out = grad_output->dim(1);
+            size_t W_out = grad_output->dim(2);
+
+            if (scale == 2.0f && H_out == H_in * 2 && W_out == W_in * 2) {
+                soar::cuda::kernels::upsample_bilinear_2x_backward(
+                    grad_output->cuda_data(), grad_x->cuda_data(), C, H_in, W_in);
+            } else {
+                soar::cuda::kernels::upsample_bilinear_backward(
+                    grad_output->cuda_data(), grad_x->cuda_data(), C, H_in, W_in, H_out, W_out);
+            }
+            propagate_grad(input, grad_x);
+            return;
+        }
         TensorPtr grad_x = Tensor::zeros(input->shape());
         const float* go = grad_output->data();
         float* gx = grad_x->data();
@@ -818,6 +1078,26 @@ TensorPtr Upsample::forward(const TensorPtr& input) {
     size_t H_out = static_cast<size_t>(std::round(H_in * scale_factor_));
     size_t W_out = static_cast<size_t>(std::round(W_in * scale_factor_));
 
+    if (input->is_cuda()) {
+        TensorPtr output = Tensor::create({static_cast<int64_t>(C),
+                                           static_cast<int64_t>(H_out),
+                                           static_cast<int64_t>(W_out)},
+                                          input->requires_grad(), true);
+        if (scale_factor_ == 2.0f && H_out == H_in * 2 && W_out == W_in * 2) {
+            soar::cuda::kernels::upsample_bilinear_2x_forward(
+                input->cuda_data(), output->cuda_data(), C, H_in, W_in);
+        } else {
+            soar::cuda::kernels::upsample_bilinear_forward(
+                input->cuda_data(), output->cuda_data(), C, H_in, W_in, H_out, W_out);
+        }
+        if (input->requires_grad()) {
+            auto node = std::make_shared<UpsampleNode>();
+            node->input = input;
+            node->scale = scale_factor_;
+            output->set_grad_fn(node);
+        }
+        return output;
+    }
     TensorPtr output = Tensor::create({static_cast<int64_t>(C),
                                        static_cast<int64_t>(H_out),
                                        static_cast<int64_t>(W_out)}, input->requires_grad());
@@ -884,6 +1164,15 @@ struct MaxPool2dNode : public AutogradNode {
 
     void backward(const TensorPtr& grad_output) override {
         if (!input->requires_grad()) return;
+        if (grad_output->is_cuda() || input->is_cuda()) {
+            if (!grad_output->is_cuda()) grad_output->to_cuda();
+            if (!input->is_cuda()) input->to_cuda();
+            TensorPtr grad_x = Tensor::zeros(input->shape(), false, true);
+            soar::cuda::kernels::global_avg_pool_backward(
+                grad_output->cuda_data(), grad_x->cuda_data(), input->dim(0), input->dim(1) * input->dim(2));
+            propagate_grad(input, grad_x);
+            return;
+        }
         TensorPtr grad_x = Tensor::zeros(input->shape());
         const float* go = grad_output->data();
         float* gx = grad_x->data();
@@ -1018,6 +1307,18 @@ TensorPtr AdaptiveAvgPool2d::forward(const TensorPtr& input) {
     size_t C = input->dim(0);
     size_t H = input->dim(1);
     size_t W = input->dim(2);
+
+    if (input->is_cuda()) {
+        TensorPtr output = Tensor::create({static_cast<int64_t>(C), 1, 1}, input->requires_grad(), true);
+        soar::cuda::kernels::global_avg_pool_forward(
+            input->cuda_data(), output->cuda_data(), C, H * W);
+        if (input->requires_grad()) {
+            auto node = std::make_shared<AvgPoolNode>();
+            node->input = input;
+            output->set_grad_fn(node);
+        }
+        return output;
+    }
 
     TensorPtr output = Tensor::create({static_cast<int64_t>(C), 1, 1}, input->requires_grad());
     const float* in_data = input->data();

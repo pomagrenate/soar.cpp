@@ -33,9 +33,9 @@ public:
     ~Tensor();
 
     // Factory methods
-    static TensorPtr create(const core::Shape& shape, bool requires_grad = false);
-    static TensorPtr zeros(const core::Shape& shape, bool requires_grad = false);
-    static TensorPtr ones(const core::Shape& shape, bool requires_grad = false);
+    static TensorPtr create(const core::Shape& shape, bool requires_grad = false, bool is_cuda = false, int device_id = 0);
+    static TensorPtr zeros(const core::Shape& shape, bool requires_grad = false, bool is_cuda = false, int device_id = 0);
+    static TensorPtr ones(const core::Shape& shape, bool requires_grad = false, bool is_cuda = false, int device_id = 0);
     static TensorPtr randn(const core::Shape& shape, float mean = 0.0f, float std = 1.0f, bool requires_grad = false);
     static TensorPtr from_blob(const core::Shape& shape, const float* data, bool copy = true);
 
@@ -75,6 +75,15 @@ public:
     void sync_to_device();
     void sync_to_host();
 
+    // CUDA Device Management
+    [[nodiscard]] bool is_cuda() const noexcept { return cuda_data_ != nullptr; }
+    [[nodiscard]] float* cuda_data() noexcept { return cuda_data_; }
+    [[nodiscard]] const float* cuda_data() const noexcept { return cuda_data_; }
+
+    void to_cuda(int device_id = 0, bool sync_from_host = true);
+    void sync_to_cuda(void* stream = nullptr);
+    void sync_cuda_to_host(void* stream = nullptr);
+
     // In-place operations
     void zero_();
     void fill_(float val);
@@ -111,6 +120,9 @@ private:
 
     bool on_device_{false};
     std::shared_ptr<vk::VulkanBuffer> device_buffer_{nullptr};
+
+    float* cuda_data_{nullptr};
+    int cuda_device_id_{0};
 
     bool requires_grad_{false};
     TensorPtr grad_{nullptr};

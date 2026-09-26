@@ -51,7 +51,15 @@ PredictionResult Predictor::predict(const TensorPtr& input_image) {
     NoGradGuard guard;
     model_->eval();
 
+    if (model_->is_cuda() && !input_image->is_cuda()) {
+        input_image->to_cuda();
+    }
+
     TensorPtr logits = model_->forward(input_image);
+    if (logits->is_cuda()) {
+        logits->sync_to_host();
+    }
+
     size_t H = logits->dim(1);
     size_t W = logits->dim(2);
     size_t n = H * W;

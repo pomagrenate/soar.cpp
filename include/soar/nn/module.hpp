@@ -97,6 +97,15 @@ public:
         }
     }
 
+    virtual void to_cuda(int device_id = 0) {
+        for (auto& [_, p] : parameters_) {
+            p->to_cuda(device_id);
+        }
+        for (auto& [_, m] : submodules_) {
+            m->to_cuda(device_id);
+        }
+    }
+
     virtual void to_host() {
         for (auto& [_, p] : parameters_) {
             p->to_host();
@@ -104,6 +113,16 @@ public:
         for (auto& [_, m] : submodules_) {
             m->to_host();
         }
+    }
+
+    [[nodiscard]] bool is_cuda() const {
+        for (const auto& [_, p] : parameters_) {
+            if (p && p->is_cuda()) return true;
+        }
+        for (const auto& [_, m] : submodules_) {
+            if (m && m->is_cuda()) return true;
+        }
+        return false;
     }
 
     [[nodiscard]] const std::string& name() const noexcept { return module_name_; }

@@ -29,6 +29,9 @@ float AdamW::clip_grad_norm(float max_norm) {
     double total_norm_sq = 0.0;
     for (const auto& p : params_) {
         if (!p || !p->grad()) continue;
+        if (p->grad()->is_cuda()) {
+            p->grad()->sync_to_host();
+        }
         const float* g = p->grad()->data();
         size_t n = p->numel();
         for (size_t i = 0; i < n; ++i) {
@@ -45,6 +48,9 @@ float AdamW::clip_grad_norm(float max_norm) {
             size_t n = p->numel();
             for (size_t i = 0; i < n; ++i) {
                 g[i] *= clip_coef;
+            }
+            if (p->grad()->is_cuda()) {
+                p->grad()->sync_to_cuda();
             }
         }
     }
@@ -67,6 +73,13 @@ void AdamW::step() {
     for (size_t idx = 0; idx < params_.size(); ++idx) {
         auto& p = params_[idx];
         if (!p || !p->grad()) continue;
+
+        if (p->is_cuda()) {
+            p->sync_to_host();
+        }
+        if (p->grad()->is_cuda()) {
+            p->grad()->sync_to_host();
+        }
 
         float* theta = p->data();
         const float* g = p->grad()->data();
@@ -96,6 +109,9 @@ void AdamW::step() {
 
         if (p->is_on_device()) {
             p->sync_to_device();
+        }
+        if (p->is_cuda()) {
+            p->sync_to_cuda();
         }
     }
 }

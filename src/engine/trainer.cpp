@@ -23,6 +23,9 @@ StepMetrics Trainer::compute_metrics(const TensorPtr& logits, const TensorPtr& m
     m.dice_loss = dice_l;
     m.lr = optimizer_.get_lr();
 
+    if (logits->is_cuda()) logits->sync_to_host();
+    if (masks->is_cuda()) masks->sync_to_host();
+
     const float* z = logits->data();
     const float* y = masks->data();
     size_t n = logits->numel();
@@ -48,6 +51,11 @@ StepMetrics Trainer::compute_metrics(const TensorPtr& logits, const TensorPtr& m
 
 StepMetrics Trainer::train_step(const TensorPtr& images, const TensorPtr& masks, bool is_accumulating) {
     model_->train(true);
+
+    if (model_->is_cuda()) {
+        if (!images->is_cuda()) images->to_cuda();
+        if (!masks->is_cuda()) masks->to_cuda();
+    }
 
     images->set_requires_grad(false);
     TensorPtr logits = model_->forward(images);
@@ -82,6 +90,10 @@ void Trainer::step_scheduler() {
 
 StepMetrics Trainer::evaluate_step(const TensorPtr& images, const TensorPtr& masks) {
     model_->eval();
+    if (model_->is_cuda()) {
+        if (!images->is_cuda()) images->to_cuda();
+        if (!masks->is_cuda()) masks->to_cuda();
+    }
     TensorPtr logits = model_->forward(images);
     float bce_l = 0.0f;
     float dice_l = 0.0f;

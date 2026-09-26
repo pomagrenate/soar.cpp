@@ -1,4 +1,7 @@
 #include <soar/nn/blocks.hpp>
+#include <soar/cuda/cuda_kernels.hpp>
+#include <soar/cuda/cuda_runtime.hpp>
+
 #include <soar/autograd/node.hpp>
 #include <soar/core/logging.hpp>
 
@@ -37,6 +40,20 @@ TensorPtr add_tensors(const TensorPtr& a, const TensorPtr& b) {
     if (a->shape() != b->shape()) {
         throw ShapeError("Cannot add tensors with different shapes");
     }
+    bool is_gpu = a->is_cuda() || b->is_cuda();
+    if (is_gpu) {
+        if (!a->is_cuda()) a->to_cuda();
+        if (!b->is_cuda()) b->to_cuda();
+        TensorPtr output = Tensor::create(a->shape(), a->requires_grad() || b->requires_grad(), true);
+        soar::cuda::kernels::add_forward(a->cuda_data(), b->cuda_data(), output->cuda_data(), a->numel());
+        if (output->requires_grad()) {
+            auto node = std::make_shared<AddNode>();
+            node->a = a;
+            node->b = b;
+            output->set_grad_fn(node);
+        }
+        return output;
+    }
     TensorPtr output = Tensor::create(a->shape(), a->requires_grad() || b->requires_grad());
     const float* p_a = a->data();
     const float* p_b = b->data();
@@ -66,6 +83,29 @@ struct MulBroadcastNode : public AutogradNode {
     }
 
     void backward(const TensorPtr& grad_output) override {
+        bool is_gpu = grad_output->is_cuda() || (a && a->is_cuda()) || (b && b->is_cuda());
+        if (is_gpu) {
+            if (!grad_output->is_cuda()) grad_output->to_cuda();
+            if (a && !a->is_cuda()) a->to_cuda();
+            if (b && !b->is_cuda()) b->to_cuda();
+
+            size_t C = a->dim(0);
+            size_t H = a->dim(1);
+            size_t W = a->dim(2);
+
+            TensorPtr grad_a = a->requires_grad() ? Tensor::zeros(a->shape(), false, true) : nullptr;
+            TensorPtr grad_b = b->requires_grad() ? Tensor::zeros(b->shape(), false, true) : nullptr;
+
+            soar::cuda::kernels::mul_broadcast_backward(
+                grad_output->cuda_data(), a->cuda_data(), b->cuda_data(),
+                grad_a ? grad_a->cuda_data() : nullptr, grad_b ? grad_b->cuda_data() : nullptr,
+                C, H * W);
+
+            if (grad_a) propagate_grad(a, grad_a);
+            if (grad_b) propagate_grad(b, grad_b);
+            return;
+        }
+
         size_t C = a->dim(0);
         size_t H = a->dim(1);
         size_t W = a->dim(2);
@@ -110,6 +150,23 @@ TensorPtr mul_tensors(const TensorPtr& a, const TensorPtr& b) {
     size_t H = a->dim(1);
     size_t W = a->dim(2);
 
+    bool is_gpu = a->is_cuda() || b->is_cuda();
+    if (is_gpu) {
+        if (!a->is_cuda()) a->to_cuda();
+        if (!b->is_cuda()) b->to_cuda();
+        TensorPtr output = Tensor::create(a->shape(), a->requires_grad() || b->requires_grad(), true);
+        if (b->numel() == C && (b->ndim() == 1 || (b->dim(1) == 1 && b->dim(2) == 1))) {
+            soar::cuda::kernels::mul_broadcast_forward(a->cuda_data(), b->cuda_data(), output->cuda_data(), C, H * W);
+            if (output->requires_grad()) {
+                auto node = std::make_shared<MulBroadcastNode>();
+                node->a = a;
+                node->b = b;
+                output->set_grad_fn(node);
+            }
+        }
+        return output;
+    }
+
     TensorPtr output = Tensor::create(a->shape(), a->requires_grad() || b->requires_grad());
     const float* p_a = a->data();
     const float* p_b = b->data();
@@ -153,6 +210,30 @@ struct ConvexNode : public AutogradNode {
     }
 
     void backward(const TensorPtr& grad_output) override {
+        bool is_gpu = grad_output->is_cuda() || (g && g->is_cuda()) || (a && a->is_cuda()) || (b && b->is_cuda());
+        if (is_gpu) {
+            if (!grad_output->is_cuda()) grad_output->to_cuda();
+            if (g && !g->is_cuda()) g->to_cuda();
+            if (a && !a->is_cuda()) a->to_cuda();
+            if (b && !b->is_cuda()) b->to_cuda();
+
+            TensorPtr grad_a = (a && a->requires_grad()) ? Tensor::zeros(a->shape(), false, true) : nullptr;
+            TensorPtr grad_b = (b && b->requires_grad()) ? Tensor::zeros(b->shape(), false, true) : nullptr;
+            TensorPtr grad_g = (g && g->requires_grad()) ? Tensor::zeros(g->shape(), false, true) : nullptr;
+
+            soar::cuda::kernels::convex_combination_backward(
+                grad_output->cuda_data(), g->cuda_data(), a->cuda_data(), b->cuda_data(),
+                grad_g ? grad_g->cuda_data() : nullptr,
+                grad_a ? grad_a->cuda_data() : nullptr,
+                grad_b ? grad_b->cuda_data() : nullptr,
+                a->numel());
+
+            if (grad_a) propagate_grad(a, grad_a);
+            if (grad_b) propagate_grad(b, grad_b);
+            if (grad_g) propagate_grad(g, grad_g);
+            return;
+        }
+
         const float* go = grad_output->data();
         const float* p_g = g->data();
         const float* p_a = a->data();
@@ -187,6 +268,23 @@ struct ConvexNode : public AutogradNode {
 };
 
 TensorPtr convex_combination(const TensorPtr& g, const TensorPtr& a, const TensorPtr& b) {
+    bool is_gpu = g->is_cuda() || a->is_cuda() || b->is_cuda();
+    if (is_gpu) {
+        if (!g->is_cuda()) g->to_cuda();
+        if (!a->is_cuda()) a->to_cuda();
+        if (!b->is_cuda()) b->to_cuda();
+        TensorPtr output = Tensor::create(a->shape(), g->requires_grad() || a->requires_grad() || b->requires_grad(), true);
+        soar::cuda::kernels::convex_combination_forward(
+            g->cuda_data(), a->cuda_data(), b->cuda_data(), output->cuda_data(), a->numel());
+        if (output->requires_grad()) {
+            auto node = std::make_shared<ConvexNode>();
+            node->g = g;
+            node->a = a;
+            node->b = b;
+            output->set_grad_fn(node);
+        }
+        return output;
+    }
     TensorPtr output = Tensor::create(a->shape(), g->requires_grad() || a->requires_grad() || b->requires_grad());
     const float* p_g = g->data();
     const float* p_a = a->data();
@@ -220,6 +318,26 @@ struct ConcatNode : public AutogradNode {
     }
 
     void backward(const TensorPtr& grad_output) override {
+        bool is_gpu = grad_output->is_cuda() || (!inputs.empty() && inputs[0]->is_cuda());
+        if (is_gpu) {
+            if (!grad_output->is_cuda()) grad_output->to_cuda();
+            size_t H = inputs[0]->dim(1);
+            size_t W = inputs[0]->dim(2);
+            size_t c_offset = 0;
+            for (auto& inp : inputs) {
+                size_t c_curr = inp->dim(0);
+                if (inp->requires_grad()) {
+                    TensorPtr grad_i = Tensor::create(inp->shape(), false, true);
+                    soar::cuda::cudaMemcpyAsync(
+                        grad_i->cuda_data(), grad_output->cuda_data() + c_offset * (H * W),
+                        inp->bytes(), soar::cuda::cudaMemcpyDeviceToDevice, nullptr);
+                    propagate_grad(inp, grad_i);
+                }
+                c_offset += c_curr;
+            }
+            return;
+        }
+
         const float* go = grad_output->data();
         size_t H = inputs[0]->dim(1);
         size_t W = inputs[0]->dim(2);
@@ -250,10 +368,28 @@ TensorPtr concat_channels(const std::vector<TensorPtr>& tensors) {
     size_t W = tensors[0]->dim(2);
     size_t total_c = 0;
     bool req_grad = false;
+    bool is_gpu = false;
 
     for (const auto& t : tensors) {
         total_c += t->dim(0);
         if (t->requires_grad()) req_grad = true;
+        if (t->is_cuda()) is_gpu = true;
+    }
+
+    if (is_gpu) {
+        TensorPtr output = Tensor::create({static_cast<int64_t>(total_c), static_cast<int64_t>(H), static_cast<int64_t>(W)}, req_grad, true);
+        size_t c_offset = 0;
+        for (const auto& t : tensors) {
+            if (!t->is_cuda()) t->to_cuda();
+            soar::cuda::cudaMemcpyAsync(output->cuda_data() + c_offset * (H * W), t->cuda_data(), t->bytes(), soar::cuda::cudaMemcpyDeviceToDevice, nullptr);
+            c_offset += t->dim(0);
+        }
+        if (req_grad) {
+            auto node = std::make_shared<ConcatNode>();
+            node->inputs = tensors;
+            output->set_grad_fn(node);
+        }
+        return output;
     }
 
     TensorPtr output = Tensor::create({static_cast<int64_t>(total_c), static_cast<int64_t>(H), static_cast<int64_t>(W)}, req_grad);
