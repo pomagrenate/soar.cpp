@@ -37,6 +37,7 @@ namespace fs = std::filesystem;
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <direct.h>
+#include <io.h>
 #else
 #include <sys/stat.h>
 #include <unistd.h>
@@ -277,6 +278,14 @@ void auto_detect_dataset_paths(const std::string& data_root,
     }
 }
 
+static bool is_terminal() {
+#if defined(_WIN32)
+    return _isatty(_fileno(stdout));
+#else
+    return isatty(fileno(stdout));
+#endif
+}
+
 static void render_progress_bar(const std::string& prefix, size_t current, size_t total,
                                 double elapsed_sec, float loss, float dice, float iou, float lr) {
     if (total == 0) return;
@@ -299,6 +308,23 @@ static void render_progress_bar(const std::string& prefix, size_t current, size_
     int el_s = static_cast<int>(elapsed_sec) % 60;
     int eta_m = static_cast<int>(eta_sec) / 60;
     int eta_s = static_cast<int>(eta_sec) % 60;
+
+    if (!is_terminal()) {
+        std::cout << prefix << " " << std::setw(3) << static_cast<int>(pct * 100.0f) << "%|"
+                  << bar << "| " << current << "/" << total
+                  << " [" << std::setfill('0') << std::setw(2) << el_m << ":" << std::setw(2) << el_s
+                  << "<" << std::setw(2) << eta_m << ":" << std::setw(2) << eta_s;
+        if (it_per_sec >= 1.0) {
+            std::cout << ", " << std::setfill(' ') << std::fixed << std::setprecision(1) << it_per_sec << "it/s";
+        } else {
+            std::cout << ", " << std::setfill(' ') << std::fixed << std::setprecision(1) << sec_per_it << "s/it";
+        }
+        std::cout << ", loss: " << std::setprecision(4) << loss
+                  << ", dice: " << std::setprecision(4) << dice
+                  << ", lr: " << std::scientific << std::setprecision(1) << lr << std::defaultfloat
+                  << "]\n" << std::flush;
+        return;
+    }
 
     std::cout << "\r" << prefix << " " << std::setw(3) << static_cast<int>(pct * 100.0f) << "%|"
               << bar << "| " << current << "/" << total
@@ -426,6 +452,11 @@ static void run_vulkan_hardware_telemetry_and_sanity_probe(soar::vk::VulkanConte
 }
 
 int main(int argc, char* argv[]) {
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
+    std::setvbuf(stderr, nullptr, _IONBF, 0);
+    std::cout << std::unitbuf;
+    std::cerr << std::unitbuf;
+
     if (argc < 2) {
         print_usage();
         return 0;
