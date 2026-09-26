@@ -310,19 +310,21 @@ static void render_progress_bar(const std::string& prefix, size_t current, size_
     int eta_s = static_cast<int>(eta_sec) % 60;
 
     if (!is_terminal()) {
-        std::cout << prefix << " " << std::setw(3) << static_cast<int>(pct * 100.0f) << "%|"
-                  << bar << "| " << current << "/" << total
-                  << " [" << std::setfill('0') << std::setw(2) << el_m << ":" << std::setw(2) << el_s
-                  << "<" << std::setw(2) << eta_m << ":" << std::setw(2) << eta_s;
-        if (it_per_sec >= 1.0) {
-            std::cout << ", " << std::setfill(' ') << std::fixed << std::setprecision(1) << it_per_sec << "it/s";
-        } else {
-            std::cout << ", " << std::setfill(' ') << std::fixed << std::setprecision(1) << sec_per_it << "s/it";
+        if (current == 1 || current == total || current % 5 == 0) {
+            std::cout << prefix << " " << std::setw(3) << static_cast<int>(pct * 100.0f) << "%|"
+                      << bar << "| " << current << "/" << total
+                      << " [" << std::setfill('0') << std::setw(2) << el_m << ":" << std::setw(2) << el_s
+                      << "<" << std::setw(2) << eta_m << ":" << std::setw(2) << eta_s;
+            if (it_per_sec >= 1.0) {
+                std::cout << ", " << std::setfill(' ') << std::fixed << std::setprecision(1) << it_per_sec << "it/s";
+            } else {
+                std::cout << ", " << std::setfill(' ') << std::fixed << std::setprecision(1) << sec_per_it << "s/it";
+            }
+            std::cout << ", loss: " << std::setprecision(4) << loss
+                      << ", dice: " << std::setprecision(4) << dice
+                      << ", lr: " << std::scientific << std::setprecision(1) << lr << std::defaultfloat
+                      << "]\n" << std::flush;
         }
-        std::cout << ", loss: " << std::setprecision(4) << loss
-                  << ", dice: " << std::setprecision(4) << dice
-                  << ", lr: " << std::scientific << std::setprecision(1) << lr << std::defaultfloat
-                  << "]\n" << std::flush;
         return;
     }
 
