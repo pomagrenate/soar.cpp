@@ -9,22 +9,26 @@ AdamW::AdamW(std::vector<TensorPtr> params, AdamWOptions options)
     m_.resize(params_.size());
     v_.resize(params_.size());
     for (size_t i = 0; i < params_.size(); ++i) {
-        size_t n = params_[i]->numel();
-        m_[i].resize(n, 0.0f);
-        v_[i].resize(n, 0.0f);
+        if (params_[i]) {
+            size_t n = params_[i]->numel();
+            m_[i].resize(n, 0.0f);
+            v_[i].resize(n, 0.0f);
+        }
     }
 }
 
 void AdamW::zero_grad() {
     for (auto& p : params_) {
-        p->zero_grad();
+        if (p) {
+            p->zero_grad();
+        }
     }
 }
 
 float AdamW::clip_grad_norm(float max_norm) {
     double total_norm_sq = 0.0;
     for (const auto& p : params_) {
-        if (!p->grad()) continue;
+        if (!p || !p->grad()) continue;
         const float* g = p->grad()->data();
         size_t n = p->numel();
         for (size_t i = 0; i < n; ++i) {
@@ -36,7 +40,7 @@ float AdamW::clip_grad_norm(float max_norm) {
     if (total_norm > max_norm && total_norm > 1e-6f) {
         float clip_coef = max_norm / total_norm;
         for (auto& p : params_) {
-            if (!p->grad()) continue;
+            if (!p || !p->grad()) continue;
             float* g = p->grad()->data();
             size_t n = p->numel();
             for (size_t i = 0; i < n; ++i) {
@@ -57,10 +61,12 @@ void AdamW::step() {
 
     float bias_correction1 = 1.0f - std::pow(beta1, static_cast<float>(step_count_));
     float bias_correction2 = 1.0f - std::pow(beta2, static_cast<float>(step_count_));
+    float sqrt_bc2 = std::sqrt(bias_correction2);
+    float step_size = lr / bias_correction1;
 
     for (size_t idx = 0; idx < params_.size(); ++idx) {
         auto& p = params_[idx];
-        if (!p->grad()) continue;
+        if (!p || !p->grad()) continue;
 
         float* theta = p->data();
         const float* g = p->grad()->data();
@@ -68,22 +74,24 @@ void AdamW::step() {
         auto& v = v_[idx];
         size_t n = p->numel();
 
+        #pragma omp parallel for if (n > 4096)
         for (size_t i = 0; i < n; ++i) {
             float g_val = g[i];
 
             // 1. Decoupled weight decay
-            theta[i] -= lr * wd * theta[i];
+            if (wd != 0.0f) {
+                theta[i] -= lr * wd * theta[i];
+            }
 
             // 2. Moments update
             m[i] = beta1 * m[i] + (1.0f - beta1) * g_val;
             v[i] = beta2 * v[i] + (1.0f - beta2) * g_val * g_val;
 
-            // 3. Bias-corrected estimates
-            float m_hat = m[i] / bias_correction1;
-            float v_hat = v[i] / bias_correction2;
+            // 3. Denominator with PyTorch-exact bias correction
+            float denom = (std::sqrt(v[i]) / sqrt_bc2) + eps;
 
             // 4. Update parameter
-            theta[i] -= lr * m_hat / (std::sqrt(v_hat) + eps);
+            theta[i] -= step_size * (m[i] / denom);
         }
 
         if (p->is_on_device()) {
@@ -99,18 +107,23 @@ CosineAnnealingLR::CosineAnnealingLR(AdamW& optimizer, size_t total_steps, float
 void CosineAnnealingLR::step() {
     current_step_++;
     if (current_step_ <= warmup_steps_ && warmup_steps_ > 0) {
-        // Linear warmup
-        float lr = base_lr_ * (static_cast<float>(current_step_) / static_cast<float>(warmup_steps_));
+        float lr = base_lr_ * static_cast<float>(current_step_) / static_cast<float>(warmup_steps_);
         optimizer_.set_lr(lr);
-    } else {
-        // Cosine decay
-        size_t decay_steps = total_steps_ - warmup_steps_;
-        size_t current_decay_step = current_step_ - warmup_steps_;
-        float progress = std::min(1.0f, static_cast<float>(current_decay_step) / static_cast<float>(decay_steps));
-        constexpr float PI = 3.14159265358979323846f;
-        float lr = eta_min_ + 0.5f * (base_lr_ - eta_min_) * (1.0f + std::cos(PI * progress));
-        optimizer_.set_lr(lr);
+        return;
     }
+
+    size_t adjusted_step = current_step_ - warmup_steps_;
+    size_t adjusted_total = total_steps_ - warmup_steps_;
+
+    if (adjusted_step > adjusted_total) {
+        optimizer_.set_lr(eta_min_);
+        return;
+    }
+
+    constexpr float pi = 3.14159265358979323846f;
+    float progress = static_cast<float>(adjusted_step) / static_cast<float>(adjusted_total);
+    float lr = eta_min_ + 0.5f * (base_lr_ - eta_min_) * (1.0f + std::cos(progress * pi));
+    optimizer_.set_lr(lr);
 }
 
 } // namespace soar::optim

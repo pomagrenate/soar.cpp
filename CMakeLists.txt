@@ -78,6 +78,12 @@ set(SOAR_SOURCES
     src/nn/soar_model.cpp
     src/losses/losses.cpp
     src/optim/adamw.cpp
+    src/optim/sgd.cpp
+    src/cuda/cuda_runtime.cpp
+    src/cuda/cuda_stream.cpp
+    src/cuda/cuda_event.cpp
+    src/cuda/cuda_allocator.cpp
+    src/autograd/engine.cpp
     src/data/image_io.cpp
     src/data/coco_dataset.cpp
     src/data/yolo_dataset.cpp
@@ -152,4 +158,20 @@ add_test(NAME test_losses COMMAND test_losses)
 add_executable(test_metrics_preprocess tests/test_metrics_preprocess.cpp)
 target_link_libraries(test_metrics_preprocess PRIVATE soar_core)
 add_test(NAME test_metrics_preprocess COMMAND test_metrics_preprocess)
+
+add_executable(test_cuda_subsystem tests/test_cuda_subsystem.cpp)
+target_link_libraries(test_cuda_subsystem PRIVATE soar_core)
+add_test(NAME test_cuda_subsystem COMMAND test_cuda_subsystem)
+
+add_executable(test_autograd_engine tests/test_autograd_engine.cpp)
+target_link_libraries(test_autograd_engine PRIVATE soar_core)
+add_test(NAME test_autograd_engine COMMAND test_autograd_engine)
+
+add_executable(test_optimizers tests/test_optimizers.cpp)
+target_link_libraries(test_optimizers PRIVATE soar_core)
+add_test(NAME test_optimizers COMMAND test_optimizers)
+
+add_executable(test_async_dataloader tests/test_async_dataloader.cpp)
+target_link_libraries(test_async_dataloader PRIVATE soar_core)
+add_test(NAME test_async_dataloader COMMAND test_async_dataloader)
 

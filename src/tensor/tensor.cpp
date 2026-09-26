@@ -139,9 +139,14 @@ void Tensor::add_grad(const TensorPtr& incoming) {
 void AutogradNode::add_grad_output(const TensorPtr& incoming) {
     if (!incoming) return;
     if (!grad_output_) {
-        grad_output_ = incoming;
+        grad_output_ = incoming->clone();
     } else {
-        grad_output_->add_grad(incoming);
+        float* d = grad_output_->data();
+        const float* s = incoming->data();
+        size_t n = std::min(grad_output_->numel(), incoming->numel());
+        for (size_t i = 0; i < n; ++i) {
+            d[i] += s[i];
+        }
     }
 }
 
@@ -156,64 +161,8 @@ void propagate_grad(const TensorPtr& tensor, const TensorPtr& incoming) {
     }
 }
 
-void run_backward(std::shared_ptr<AutogradNode> root, const TensorPtr& root_grad) {
-    if (!root) return;
+void run_backward(std::shared_ptr<AutogradNode> root, const TensorPtr& root_grad);
 
-    // 1. Build reachability graph and compute in-degree in backward DAG
-    std::unordered_map<AutogradNode*, int> in_degree;
-    std::unordered_map<AutogradNode*, std::vector<std::shared_ptr<AutogradNode>>> next_nodes;
-    std::unordered_set<AutogradNode*> visited;
-    std::vector<std::shared_ptr<AutogradNode>> stack;
-    stack.push_back(root);
-    visited.insert(root.get());
-
-    while (!stack.empty()) {
-        auto curr = stack.back();
-        stack.pop_back();
-
-        for (const auto& parent : curr->get_inputs()) {
-            if (!parent) continue;
-            next_nodes[curr.get()].push_back(parent);
-            in_degree[parent.get()]++;
-            if (visited.insert(parent.get()).second) {
-                stack.push_back(parent);
-            }
-        }
-    }
-
-    // 2. Initialize root's incoming gradient
-    root->add_grad_output(root_grad);
-
-    std::queue<std::shared_ptr<AutogradNode>> ready_queue;
-    ready_queue.push(root);
-
-    // 3. Process nodes in topological order using Kahn's algorithm
-    while (!ready_queue.empty()) {
-        auto node = ready_queue.front();
-        ready_queue.pop();
-
-        TensorPtr go = node->grad_output_;
-        node->grad_output_ = nullptr; // release intermediate gradient memory
-
-        // Execute backward for this node
-        node->backward(go);
-        node->release_variables(); // release saved activations immediately
-
-        // Decrement in-degree for dependent nodes using cached graph edges
-        auto it_edges = next_nodes.find(node.get());
-        if (it_edges != next_nodes.end()) {
-            for (const auto& parent : it_edges->second) {
-                auto it = in_degree.find(parent.get());
-                if (it != in_degree.end()) {
-                    it->second--;
-                    if (it->second == 0) {
-                        ready_queue.push(parent);
-                    }
-                }
-            }
-        }
-    }
-}
 
 void Tensor::backward(TensorPtr gradient) {
     if (!requires_grad_) {
