@@ -111,9 +111,20 @@ void test_memory_pool_caching() {
 
 int main() {
     std::cout << "=== Running SOAR CUDA Subsystem Tests ===" << std::endl;
-    test_stream_pool();
-    test_event_synchronization();
-    test_memory_pool_caching();
-    std::cout << "ALL CUDA SUBSYSTEM TESTS PASSED!" << std::endl;
-    return 0;
+    int dev_count = 0;
+    if (cudaGetDeviceCount(&dev_count) != cudaSuccess || dev_count == 0) {
+        std::cout << "[SKIP] No physical NVIDIA CUDA GPU hardware detected. Skipping CUDA hardware tests (CTest return code 77)." << std::endl;
+        return 77;
+    }
+
+    try {
+        test_stream_pool();
+        test_event_synchronization();
+        test_memory_pool_caching();
+        std::cout << "ALL CUDA SUBSYSTEM TESTS PASSED!" << std::endl;
+        return 0;
+    } catch (const std::exception& e) {
+        std::cerr << "[FATAL] CUDA test failed: " << e.what() << std::endl;
+        return 1;
+    }
 }

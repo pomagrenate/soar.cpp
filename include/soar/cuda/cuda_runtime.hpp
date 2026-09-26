@@ -114,6 +114,17 @@ cudaError_t cudaMemcpyAsync(void* dst, const void* src, size_t count, cudaMemcpy
 cudaError_t cudaMemset(void* devPtr, int value, size_t count) noexcept;
 cudaError_t cudaMemsetAsync(void* devPtr, int value, size_t count, cudaStream_t stream) noexcept;
 
+struct cudaDeviceProp {
+    char name[256]{0};
+    size_t totalGlobalMem{0};
+    int major{0};
+    int minor{0};
+    int multiProcessorCount{0};
+};
+
+cudaError_t cudaGetDeviceProperties(cudaDeviceProp* prop, int device) noexcept;
+cudaError_t cudaMemGetInfo(size_t* free, size_t* total) noexcept;
+
 cudaError_t cudaDeviceSynchronize() noexcept;
 
 } // namespace soar::cuda

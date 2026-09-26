@@ -129,10 +129,32 @@ void CommandQueue::memory_barrier(const VulkanContext& ctx,
     barrier.offset = buffer.offset();
     barrier.size = buffer.size();
 
+    VkPipelineStageFlags src_stages = 0;
+    if (src_access & (VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT)) {
+        src_stages |= VK_PIPELINE_STAGE_TRANSFER_BIT;
+    }
+    if (src_access & (VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_UNIFORM_READ_BIT)) {
+        src_stages |= VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+    }
+    if (src_stages == 0) {
+        src_stages = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT;
+    }
+
+    VkPipelineStageFlags dst_stages = 0;
+    if (dst_access & (VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT)) {
+        dst_stages |= VK_PIPELINE_STAGE_TRANSFER_BIT;
+    }
+    if (dst_access & (VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_UNIFORM_READ_BIT)) {
+        dst_stages |= VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+    }
+    if (dst_stages == 0) {
+        dst_stages = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT;
+    }
+
     ctx.loader().vkCmdPipelineBarrier(
         cmd,
-        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        src_stages,
+        dst_stages,
         0,
         0, nullptr,
         1, &barrier,

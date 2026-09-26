@@ -26,7 +26,7 @@ struct DeviceInfo {
  */
 class VulkanContext {
 public:
-    explicit VulkanContext(bool enable_validation_layers = false);
+    explicit VulkanContext(bool enable_validation_layers = false, bool allow_cpu_fallback = false);
     ~VulkanContext();
 
     // Non-copyable, movable
@@ -74,6 +74,7 @@ private:
 
     VkPhysicalDeviceMemoryProperties memory_properties_{};
     DeviceInfo device_info_{};
+    bool allow_cpu_fallback_{false};
 };
 
 } // namespace soar::vk

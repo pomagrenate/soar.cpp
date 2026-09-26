@@ -8,7 +8,8 @@
 
 namespace soar::vk {
 
-VulkanContext::VulkanContext(bool enable_validation_layers) {
+VulkanContext::VulkanContext(bool enable_validation_layers, bool allow_cpu_fallback)
+    : allow_cpu_fallback_(allow_cpu_fallback) {
     init_instance(enable_validation_layers);
     pick_physical_device();
     init_logical_device();
@@ -91,7 +92,7 @@ void VulkanContext::init_instance(bool enable_validation) {
     };
 
     VkResult res = attempt_create();
-    if (res != VK_SUCCESS) {
+    if (res != VK_SUCCESS && allow_cpu_fallback_) {
         SOAR_LOG_WARN("Standard Vulkan instance creation returned {}. Attempting SwiftShader fallback...", static_cast<int>(res));
         DynamicLoader::configure_swiftshader_fallback();
         loader_.load_library();
@@ -108,7 +109,7 @@ void VulkanContext::init_instance(bool enable_validation) {
 void VulkanContext::pick_physical_device() {
     uint32_t device_count = 0;
     loader_.vkEnumeratePhysicalDevices(instance_, &device_count, nullptr);
-    if (device_count == 0) {
+    if (device_count == 0 && allow_cpu_fallback_) {
         SOAR_LOG_WARN("0 Vulkan physical devices found. Trying SwiftShader fallback...");
         DynamicLoader::configure_swiftshader_fallback();
         loader_.load_library();
@@ -126,25 +127,43 @@ void VulkanContext::pick_physical_device() {
     int best_score = -1;
     VkPhysicalDevice best_dev = VK_NULL_HANDLE;
 
+    auto is_software_device = [](const VkPhysicalDeviceProperties& p) -> bool {
+        if (p.deviceType == VK_PHYSICAL_DEVICE_TYPE_CPU) return true;
+        std::string name = p.deviceName;
+        std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c) { return std::tolower(c); });
+        if (name.find("swiftshader") != std::string::npos) return true;
+        if (name.find("llvmpipe") != std::string::npos) return true;
+        if (name.find("software") != std::string::npos) return true;
+        return false;
+    };
+
     for (const auto& dev : devices) {
         VkPhysicalDeviceProperties props;
         loader_.vkGetPhysicalDeviceProperties(dev, &props);
 
         int score = 0;
-        if (props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU) {
+        if (is_software_device(props)) {
+            if (!allow_cpu_fallback_) {
+                SOAR_LOG_WARN("Strict hardware filter: rejecting software-emulated device '{}'", props.deviceName);
+                continue;
+            }
+            score = 100;
+        } else if (props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU) {
             score = 10000;
         } else if (props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU) {
             score = 5000;
         } else if (props.deviceType == VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU) {
             score = 2000;
-        } else if (props.deviceType == VK_PHYSICAL_DEVICE_TYPE_CPU) {
-            score = 1000;
         }
 
         if (score > best_score) {
             best_score = score;
             best_dev = dev;
         }
+    }
+
+    if (best_score <= 0 || best_dev == VK_NULL_HANDLE) {
+        throw HardwareNotFoundError("No physical hardware GPU (VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU / INTEGRATED_GPU) found. Software rasterizers (SwiftShader / llvmpipe) are strictly forbidden.");
     }
 
     physical_device_ = best_dev;

@@ -58,6 +58,31 @@ endif()
 
 find_package(OpenMP)
 
+# GLSL Compute Shader Toolchain: Check for glslangValidator / glslc
+find_program(GLSL_COMPILER NAMES glslangValidator glslc HINTS "$ENV{VULKAN_SDK}/bin" "/usr/bin" "/usr/local/bin")
+if(GLSL_COMPILER)
+    message(STATUS "[Vulkan Compute] Found GLSL compiler: ${GLSL_COMPILER}")
+    file(GLOB COMP_SHADERS "${CMAKE_CURRENT_SOURCE_DIR}/shaders/*.comp")
+    file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/shaders")
+    set(SPV_TARGETS "")
+    foreach(SHADER ${COMP_SHADERS})
+        get_filename_component(SHADER_NAME ${SHADER} NAME_WE)
+        set(SPV_OUT "${CMAKE_CURRENT_BINARY_DIR}/shaders/${SHADER_NAME}.spv")
+        add_custom_command(
+            OUTPUT ${SPV_OUT}
+            COMMAND ${GLSL_COMPILER} -V ${SHADER} -o ${SPV_OUT}
+            DEPENDS ${SHADER}
+            COMMENT "Compiling SPIR-V shader: ${SHADER_NAME}.comp -> ${SHADER_NAME}.spv"
+        )
+        list(APPEND SPV_TARGETS ${SPV_OUT})
+    endforeach()
+    if(SPV_TARGETS)
+        add_custom_target(compile_shaders DEPENDS ${SPV_TARGETS})
+    endif()
+else()
+    message(STATUS "[Vulkan Compute] glslangValidator/glslc not found; using bundled precompiled SPIR-V headers.")
+endif()
+
 # Core SOAR library sources
 set(SOAR_SOURCES
     src/core/logging.cpp
@@ -164,6 +189,7 @@ add_test(NAME test_metrics_preprocess COMMAND test_metrics_preprocess)
 add_executable(test_cuda_subsystem tests/test_cuda_subsystem.cpp)
 target_link_libraries(test_cuda_subsystem PRIVATE soar_core)
 add_test(NAME test_cuda_subsystem COMMAND test_cuda_subsystem)
+set_tests_properties(test_cuda_subsystem PROPERTIES SKIP_RETURN_CODE 77)
 
 add_executable(test_autograd_engine tests/test_autograd_engine.cpp)
 target_link_libraries(test_autograd_engine PRIVATE soar_core)

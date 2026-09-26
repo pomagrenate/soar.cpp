@@ -5,12 +5,17 @@
 #include <soar/losses/losses.hpp>
 #include <soar/optim/adamw.hpp>
 #include <soar/core/logging.hpp>
+#include <soar/core/error.hpp>
 #include <soar/core/config_parser.hpp>
 #include <soar/data/image_io.hpp>
 #include <soar/data/coco_dataset.hpp>
 #include <soar/data/yolo_dataset.hpp>
 #include <soar/data/dataloader.hpp>
 #include <soar/vulkan/context.hpp>
+#include <soar/vulkan/buffer.hpp>
+#include <soar/vulkan/pipeline.hpp>
+#include <soar/vulkan/command_queue.hpp>
+#include <soar/shaders/spv_shaders.hpp>
 #include <soar/cuda/cuda_runtime.hpp>
 #include "palloc.h"
 
@@ -310,6 +315,116 @@ static void render_progress_bar(const std::string& prefix, size_t current, size_
               << "]   " << std::flush;
 }
 
+static void run_vulkan_hardware_telemetry_and_sanity_probe(soar::vk::VulkanContext& vk_ctx) {
+    const auto& info = vk_ctx.device_info();
+
+    std::string dev_type_str = "Unknown";
+    switch (info.device_type) {
+        case VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU: dev_type_str = "Discrete GPU"; break;
+        case VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU: dev_type_str = "Integrated GPU"; break;
+        case VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU: dev_type_str = "Virtual GPU"; break;
+        case VK_PHYSICAL_DEVICE_TYPE_CPU: dev_type_str = "Software / CPU Emulator"; break;
+        default: dev_type_str = "Other / Accelerator"; break;
+    }
+
+    double vram_mb = static_cast<double>(info.total_device_memory) / (1024.0 * 1024.0);
+    double vram_gb = vram_mb / 1024.0;
+
+    std::cout << "\n=================================================================\n"
+              << "  SOAR Universal GPU Hardware Telemetry & Sanity Probe           \n"
+              << "=================================================================\n"
+              << "  Physical Device Name:  " << info.device_name << "\n"
+              << "  Vendor ID:             0x" << std::hex << info.vendor_id << std::dec << "\n"
+              << "  Device Type:           " << dev_type_str << "\n"
+              << "  API Version:           " << VK_VERSION_MAJOR(info.api_version) << "."
+                                         << VK_VERSION_MINOR(info.api_version) << "."
+                                         << VK_VERSION_PATCH(info.api_version) << "\n"
+              << "  Dedicated VRAM:        " << std::fixed << std::setprecision(1) << vram_mb << " MB";
+    if (vram_gb >= 1.0) {
+        std::cout << " (" << std::fixed << std::setprecision(2) << vram_gb << " GB)";
+    }
+    std::cout << "\n"
+              << "  Compute Queue Family:  " << vk_ctx.compute_queue_family_index() << "\n"
+              << "-----------------------------------------------------------------\n"
+              << "  Executing 1MB DEVICE_LOCAL Compute Shader Sanity Probe...\n";
+
+    constexpr size_t PROBE_ELEMENTS = 256 * 1024; // 256K floats = 1 MB
+    constexpr size_t PROBE_BYTES = PROBE_ELEMENTS * sizeof(float);
+
+    std::vector<float> host_in(PROBE_ELEMENTS);
+    for (size_t i = 0; i < PROBE_ELEMENTS; ++i) {
+        host_in[i] = static_cast<float>(i % 1000) * 0.005f - 2.5f;
+    }
+
+    // Allocate host staging buffers and device local storage buffers
+    soar::vk::VulkanBuffer staging_in(vk_ctx, PROBE_BYTES, soar::vk::BufferUsageType::StagingHost);
+    soar::vk::VulkanBuffer dev_in(vk_ctx, PROBE_BYTES, soar::vk::BufferUsageType::DeviceStorage);
+    soar::vk::VulkanBuffer dev_out(vk_ctx, PROBE_BYTES, soar::vk::BufferUsageType::DeviceStorage);
+    soar::vk::VulkanBuffer staging_out(vk_ctx, PROBE_BYTES, soar::vk::BufferUsageType::StagingHost);
+
+    staging_in.upload_host(host_in.data(), PROBE_BYTES);
+
+    struct SigmoidPC {
+        uint32_t total_elements;
+    } pc{ static_cast<uint32_t>(PROBE_ELEMENTS) };
+
+    soar::vk::ComputePipeline pipeline(vk_ctx, soar::shaders::get_sigmoid(), 2, sizeof(SigmoidPC));
+    const soar::vk::VulkanBuffer* bufs[] = { &dev_in, &dev_out };
+    pipeline.bind_buffers(bufs);
+
+    soar::vk::CommandQueue queue(vk_ctx);
+
+    auto start_time = std::chrono::high_resolution_clock::now();
+
+    queue.execute_sync([&](VkCommandBuffer cmd) {
+        // Upload staging -> device local
+        dev_in.copy_from(cmd, staging_in, PROBE_BYTES);
+
+        // Memory barrier: transfer write -> compute shader read
+        soar::vk::CommandQueue::memory_barrier(
+            vk_ctx, cmd, dev_in,
+            VK_ACCESS_TRANSFER_WRITE_BIT,
+            VK_ACCESS_SHADER_READ_BIT
+        );
+
+        // Compute dispatch
+        uint32_t group_x = (static_cast<uint32_t>(PROBE_ELEMENTS) + 255) / 256;
+        pipeline.record_dispatch(cmd, group_x, 1, 1, &pc, sizeof(pc));
+
+        // Memory barrier: compute shader write -> transfer read
+        soar::vk::CommandQueue::memory_barrier(
+            vk_ctx, cmd, dev_out,
+            VK_ACCESS_SHADER_WRITE_BIT,
+            VK_ACCESS_TRANSFER_READ_BIT
+        );
+
+        // Download device local -> staging
+        staging_out.copy_from(cmd, dev_out, PROBE_BYTES);
+    });
+
+    auto end_time = std::chrono::high_resolution_clock::now();
+    auto duration_us = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count();
+
+    std::vector<float> host_out(PROBE_ELEMENTS, 0.0f);
+    staging_out.download_host(host_out.data(), PROBE_BYTES);
+
+    float max_delta = 0.0f;
+    for (size_t i = 0; i < PROBE_ELEMENTS; ++i) {
+        float expected = 1.0f / (1.0f + std::exp(-host_in[i]));
+        float delta = std::fabs(host_out[i] - expected);
+        if (delta > max_delta) max_delta = delta;
+    }
+
+    if (max_delta > 1e-4f) {
+        throw soar::DeviceError("Hardware compute probe numerical sanity check failed! Max delta: " + std::to_string(max_delta));
+    }
+
+    std::cout << "  -> Hardware Sanity Probe PASSED!\n"
+              << "     Transfer + Compute Latency: " << duration_us << " us\n"
+              << "     Numerical Precision Delta:  " << std::scientific << std::setprecision(3) << max_delta << std::defaultfloat << "\n"
+              << "=================================================================\n\n";
+}
+
 int main(int argc, char* argv[]) {
     if (argc < 2) {
         print_usage();
@@ -419,40 +534,51 @@ int main(int argc, char* argv[]) {
         std::cout << "[WARN] Config file '" << config_path << "' not found, using default Nano configuration." << std::endl;
     }
 
-    bool use_cuda = false;
+    [[maybe_unused]] bool use_cuda = false;
     std::unique_ptr<soar::vk::VulkanContext> vk_ctx;
 
-    if (device_str == "cuda" || device_str == "gpu" || device_str == "auto") {
+    if (device_str == "cuda") {
         int cuda_count = 0;
         if (soar::cuda::cudaGetDeviceCount(&cuda_count) == soar::cuda::cudaSuccess && cuda_count > 0) {
             std::cout << "[SOAR Engine] Native CUDA device initialized: "
                       << cuda_count << " GPU device(s) active." << std::endl;
             use_cuda = true;
-        } else if (device_str == "cuda") {
-            std::cout << "[WARN] CUDA requested but no active device detected. Falling back to CPU engine." << std::endl;
+        } else {
+            std::cerr << "[FATAL] CUDA requested but no active device detected." << std::endl;
+            return 1;
         }
-    }
-
-    if (!use_cuda && (device_str == "vulkan" || device_str == "vk")) {
+    } else if (device_str == "vulkan" || device_str == "vk" || device_str == "gpu") {
         try {
-            vk_ctx = std::make_unique<soar::vk::VulkanContext>(false);
-            if (vk_ctx->device_info().device_name.find("SwiftShader") != std::string::npos) {
-                std::cout << "[SOAR Engine] Vulkan device is CPU emulation (SwiftShader). Using native multi-threaded CPU OpenMP engine for optimal performance." << std::endl;
-                vk_ctx.reset();
-            } else {
-                std::cout << "[SOAR Engine] GPU acceleration initialized on device: "
-                          << vk_ctx->device_info().device_name << std::endl;
-            }
+            vk_ctx = std::make_unique<soar::vk::VulkanContext>(false, /*allow_cpu_fallback=*/false);
+            run_vulkan_hardware_telemetry_and_sanity_probe(*vk_ctx);
+        } catch (const soar::HardwareNotFoundError& e) {
+            std::cerr << "[FATAL] Physical GPU hardware acceleration requested ('" << device_str << "'), "
+                      << "but no physical GPU hardware is available: " << e.what() << "\n"
+                      << "Execution terminated. Software/CPU emulation fallbacks are strictly prohibited." << std::endl;
+            return 1;
         } catch (const std::exception& e) {
-            std::cout << "[WARN] Vulkan GPU device requested but failed: " << e.what()
-                      << ". Falling back to multi-threaded CPU OpenMP engine." << std::endl;
+            std::cerr << "[FATAL] Physical GPU initialization failed: " << e.what() << std::endl;
+            return 1;
+        }
+    } else if (device_str == "auto") {
+        // Attempt physical Vulkan GPU first
+        try {
+            vk_ctx = std::make_unique<soar::vk::VulkanContext>(false, /*allow_cpu_fallback=*/false);
+            run_vulkan_hardware_telemetry_and_sanity_probe(*vk_ctx);
+        } catch (const std::exception& e) {
+            std::cout << "[SOAR Engine] Auto-detection: No compatible physical Vulkan GPU detected ("
+                      << e.what() << ").\n"
+                      << "[SOAR Engine] Selecting multi-threaded CPU OpenMP engine ("
+                      << std::thread::hardware_concurrency() << " concurrent threads active)." << std::endl;
             vk_ctx.reset();
         }
-    }
-
-    if (!use_cuda && !vk_ctx) {
+    } else if (device_str == "cpu") {
         std::cout << "[SOAR Engine] Hardware accelerator: Multi-threaded CPU OpenMP engine ("
                   << std::thread::hardware_concurrency() << " concurrent threads active)." << std::endl;
+    } else {
+        std::cerr << "[ERROR] Unknown device specified: '" << device_str
+                  << "'. Valid options are: auto, gpu, vulkan, cuda, cpu." << std::endl;
+        return 1;
     }
 
     auto model = std::make_shared<soar::nn::SOARModel>(m_cfg.in_channels, m_cfg.num_classes, m_cfg.variant);

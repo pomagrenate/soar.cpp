@@ -86,6 +86,11 @@ namespace soar {
         explicit DeviceError(const std::string& msg) : SoarException("[DeviceError] " + msg) {}
     };
 
+    class HardwareNotFoundError : public DeviceError {
+    public:
+        explicit HardwareNotFoundError(const std::string& msg) : DeviceError("[HardwareNotFoundError] " + msg) {}
+    };
+
     class MemoryError : public SoarException {
     public:
         explicit MemoryError(const std::string& msg) : SoarException("[MemoryError] " + msg) {}
