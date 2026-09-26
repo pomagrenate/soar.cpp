@@ -138,10 +138,12 @@ add_test(NAME test_palloc_memory COMMAND test_palloc_memory)
 add_executable(test_vulkan_backend tests/test_vulkan_backend.cpp)
 target_link_libraries(test_vulkan_backend PRIVATE soar_core)
 add_test(NAME test_vulkan_backend COMMAND test_vulkan_backend)
+set_tests_properties(test_vulkan_backend PROPERTIES SKIP_RETURN_CODE 77)
 
 add_executable(test_operators tests/test_operators.cpp)
 target_link_libraries(test_operators PRIVATE soar_core)
 add_test(NAME test_operators COMMAND test_operators)
+set_tests_properties(test_operators PROPERTIES SKIP_RETURN_CODE 77)
 
 add_executable(test_full_engine tests/test_full_engine.cpp)
 target_link_libraries(test_full_engine PRIVATE soar_core)

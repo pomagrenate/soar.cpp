@@ -112,6 +112,8 @@ void test_model_ema() {
     ema.update(model);
     float expected_ema = 0.9f * orig_val + 0.1f * (orig_val + 10.0f);
     float shadow_val = ema.shadow_params()[0]->data()[0];
+    (void)expected_ema;
+    (void)shadow_val;
     assert(std::abs(shadow_val - expected_ema) < 1e-4f);
 
     ema.apply_to(model);

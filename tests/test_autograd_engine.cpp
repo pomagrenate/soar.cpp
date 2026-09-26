@@ -85,6 +85,7 @@ void test_topological_execution_and_gradient_accumulation() {
     assert(std::abs(w->grad()->data()[1] - 2.0f) < 1e-6f);
 
     float* grad_ptr_first_pass = w->grad()->data();
+    (void)grad_ptr_first_pass;
 
     // Step 2: Virtual gradient accumulation (micro-batch 2 without zeroing grad)
     auto root2 = std::make_shared<AddNode>(acc_w, acc_w);

@@ -108,6 +108,8 @@ void test_weight_serialization() {
         assert(p1[i].first == p2[i].first);
         const float* d1 = p1[i].second->data();
         const float* d2 = p2[i].second->data();
+        (void)d1;
+        (void)d2;
         size_t n = p1[i].second->numel();
         for (size_t j = 0; j < n; ++j) {
             assert(d1[j] == d2[j]);
@@ -132,6 +134,7 @@ void test_c_api() {
     float loss = 0, dice = 0, iou = 0;
 
     int res = soar_train_step(handle, img.data(), msk.data(), 1, 64, 64, 1e-3f, &loss, &dice, &iou);
+    (void)res;
     assert(res == 0);
     std::cout << "  C API Train Step Loss: " << loss << ", Dice: " << dice << std::endl;
 

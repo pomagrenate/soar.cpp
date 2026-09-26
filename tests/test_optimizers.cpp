@@ -73,6 +73,8 @@ void test_sgd_parity() {
     // p = 2.0 - 0.1 * 0.42 = 1.958
     float expected1 = 1.958f;
     float actual1 = p->data()[0];
+    (void)expected1;
+    (void)actual1;
     assert(std::abs(actual1 - expected1) < 1e-6f);
 
     // Step 2: grad = 0.2
@@ -105,11 +107,13 @@ void test_gradient_clipping() {
 
     AdamW optimizer({p1});
     float norm = optimizer.clip_grad_norm(2.5f);
+    (void)norm;
     assert(std::abs(norm - 5.0f) < 1e-5f);
 
     // After clipping with max_norm=2.5: scale = 2.5 / 5.0 = 0.5
     // g[0] = 1.5, g[1] = 2.0 -> new norm = 2.5
     float new_norm = std::sqrt(g->data()[0] * g->data()[0] + g->data()[1] * g->data()[1]);
+    (void)new_norm;
     assert(std::abs(new_norm - 2.5f) < 1e-5f);
     std::cout << "  Passed gradient clipping by global L2 norm." << std::endl;
 }

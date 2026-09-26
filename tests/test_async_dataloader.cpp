@@ -80,7 +80,6 @@ void test_pytorch_exact_stateless_dataloader() {
 
     struct NativeTorchDataset {
         using BatchType = std::vector<int>;
-        using BatchRequestType = std::vector<size_t>;
 
         size_t total_samples = 64;
 
@@ -116,6 +115,7 @@ void test_pytorch_exact_stateless_dataloader() {
     for (const auto& batch : *loader) {
         assert(batch.size() == 8);
         for (int val : batch) {
+            (void)val;
             assert(val == expected_val);
             expected_val++;
         }
@@ -131,6 +131,7 @@ void test_pytorch_exact_stateless_dataloader() {
     for (const auto& batch : *loader) {
         assert(batch.size() == 8);
         for (int val : batch) {
+            (void)val;
             assert(val == expected_val);
             expected_val++;
         }
@@ -146,7 +147,6 @@ void test_pytorch_worker_exception() {
 
     struct FaultyDataset {
         using BatchType = std::vector<int>;
-        using BatchRequestType = std::vector<size_t>;
 
         [[nodiscard]] std::optional<size_t> size() const noexcept {
             return 32;
@@ -180,6 +180,7 @@ void test_pytorch_worker_exception() {
         assert(msg.find("Simulated corrupted image sector") != std::string::npos);
         std::cout << "  Successfully caught WorkerException: " << e.what() << std::endl;
     }
+    (void)caught;
     assert(caught);
 }
 

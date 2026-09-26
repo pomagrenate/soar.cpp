@@ -20,6 +20,7 @@ void test_palloc_arena_alignment() {
 
     // 2. Allocate 256-byte aligned vector (Vulkan uniform buffer alignment)
     void* ptr256 = arena.allocate_bytes(512, 256);
+    (void)ptr256;
     assert(ptr256 != nullptr);
     assert(reinterpret_cast<uintptr_t>(ptr256) % 256 == 0);
 
@@ -32,12 +33,14 @@ void test_palloc_arena_alignment() {
 
     // 4. Test O(1) bulk reset
     size_t before_reset = arena.allocated();
+    (void)before_reset;
     assert(before_reset > 0);
     arena.reset();
     assert(arena.allocated() == 0);
 
     // Re-allocate after reset
     void* ptr_after = arena.allocate_bytes(128, 64);
+    (void)ptr_after;
     assert(ptr_after != nullptr);
     assert(reinterpret_cast<uintptr_t>(ptr_after) % 64 == 0);
     std::cout << "  -> test_palloc_arena_alignment PASSED\n";
@@ -85,6 +88,7 @@ void test_device_slab_sub_allocator() {
     // Freeze static parameters
     slab.freeze_static_parameters();
     size_t static_boundary = slab.static_boundary();
+    (void)static_boundary;
     assert(static_boundary > 0);
     assert(static_boundary % 256 == 0);
 

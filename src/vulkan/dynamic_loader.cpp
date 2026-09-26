@@ -256,10 +256,25 @@ void DynamicLoader::load_library(const std::string& custom_lib_path) {
 #else
     search_names.push_back("libvulkan.so.1");
     search_names.push_back("libvulkan.so");
+    search_names.push_back("libvulkan.so.0");
     search_names.push_back("/usr/lib/x86_64-linux-gnu/libvulkan.so.1");
     search_names.push_back("/usr/lib/x86_64-linux-gnu/libvulkan.so");
+    search_names.push_back("/usr/lib64/libvulkan.so.1");
+    search_names.push_back("/usr/lib64/libvulkan.so");
     search_names.push_back("/usr/local/lib/libvulkan.so.1");
     search_names.push_back("/usr/local/lib/libvulkan.so");
+    search_names.push_back("/usr/lib/libvulkan.so.1");
+    search_names.push_back("/usr/lib/libvulkan.so");
+    search_names.push_back("/lib/x86_64-linux-gnu/libvulkan.so.1");
+    search_names.push_back("/lib/x86_64-linux-gnu/libvulkan.so");
+    search_names.push_back("/usr/local/nvidia/lib64/libvulkan.so.1");
+    search_names.push_back("/usr/local/nvidia/lib64/libvulkan.so");
+    search_names.push_back("/usr/local/cuda/lib64/libvulkan.so.1");
+    search_names.push_back("/usr/local/cuda/lib64/libvulkan.so");
+    search_names.push_back("/usr/lib/x86_64-linux-gnu/libGLX_nvidia.so.0");
+    search_names.push_back("/usr/lib64/libGLX_nvidia.so.0");
+    search_names.push_back("/usr/lib/x86_64-linux-gnu/libvk_swiftshader.so");
+    search_names.push_back("libvk_swiftshader.so");
 #endif
 
     for (const auto& name : search_names) {
@@ -277,6 +292,11 @@ void DynamicLoader::load_library(const std::string& custom_lib_path) {
     vkGetInstanceProcAddr = reinterpret_cast<PFN_vkGetInstanceProcAddr>(
         get_proc_symbol(library_handle_, "vkGetInstanceProcAddr")
     );
+    if (!vkGetInstanceProcAddr) {
+        vkGetInstanceProcAddr = reinterpret_cast<PFN_vkGetInstanceProcAddr>(
+            get_proc_symbol(library_handle_, "vk_icdGetInstanceProcAddr")
+        );
+    }
 
     if (!vkGetInstanceProcAddr) {
         unload();

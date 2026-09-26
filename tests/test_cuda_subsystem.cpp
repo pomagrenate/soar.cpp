@@ -79,6 +79,7 @@ void test_memory_pool_caching() {
     assert(p1 != p2);
 
     size_t active_before = pool.active_blocks();
+    (void)active_before;
     assert(active_before >= 2);
 
     std::cout << "  Check 2: deallocate p1, p2" << std::endl;
@@ -88,6 +89,7 @@ void test_memory_pool_caching() {
 
     std::cout << "  Check 3: allocate p3" << std::endl;
     size_t reserved_before = pool.reserved_bytes();
+    (void)reserved_before;
     void* p3 = pool.allocate(300);
     assert(p3 != nullptr);
     assert(reinterpret_cast<uintptr_t>(p3) % 64 == 0);
