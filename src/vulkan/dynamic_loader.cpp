@@ -157,30 +157,32 @@ void DynamicLoader::configure_nvidia_icd() {
         return;
     }
     std::vector<std::string> nvidia_candidates = {
-        "/usr/lib/x86_64-linux-gnu/libGLX_nvidia.so.0",
-        "/usr/lib/x86_64-linux-gnu/libGLX_nvidia.so",
-        "/usr/local/nvidia/lib64/libGLX_nvidia.so.0",
-        "/usr/local/nvidia/lib64/libGLX_nvidia.so",
-        "/usr/lib64/libGLX_nvidia.so.0",
-        "/usr/lib/libGLX_nvidia.so.0",
         "/usr/lib/x86_64-linux-gnu/libvulkan_nvidia.so",
         "/usr/lib/x86_64-linux-gnu/libvulkan_nvidia.so.0",
-        "/usr/local/nvidia/lib64/libvulkan_nvidia.so"
+        "/usr/local/nvidia/lib64/libvulkan_nvidia.so",
+        "/usr/local/nvidia/lib64/libvulkan_nvidia.so.0",
+        "/usr/lib64/libvulkan_nvidia.so",
+        "/usr/lib/libvulkan_nvidia.so",
+        "/usr/lib/x86_64-linux-gnu/libGLX_nvidia.so.0",
+        "/usr/local/nvidia/lib64/libGLX_nvidia.so.0"
     };
     for (const auto& cand : nvidia_candidates) {
-        FILE* tf = std::fopen(cand.c_str(), "rb");
-        if (tf) {
-            std::fclose(tf);
-            std::string icd_json_path = "/tmp/soar_nvidia_icd.json";
-            FILE* out = std::fopen(icd_json_path.c_str(), "w");
-            if (out) {
-                std::fprintf(out, "{\n  \"file_format_version\": \"1.0.0\",\n  \"ICD\": {\n    \"library_path\": \"%s\",\n    \"api_version\": \"1.3.0\"\n  }\n}\n", cand.c_str());
-                std::fclose(out);
-                set_env_variable("VK_ICD_FILENAMES", icd_json_path);
-                set_env_variable("VK_DRIVER_FILES", icd_json_path);
-                SOAR_LOG_INFO("Configured Vulkan NVIDIA hardware ICD: {}", icd_json_path);
-                return;
-            }
+        void* handle = load_shared_library(cand);
+        if (!handle) continue;
+        void* sym = get_proc_symbol(handle, "vk_icdGetInstanceProcAddr");
+        if (!sym) sym = get_proc_symbol(handle, "vkGetInstanceProcAddr");
+        free_shared_library(handle);
+        if (!sym) continue;
+
+        std::string icd_json_path = "/tmp/soar_nvidia_icd.json";
+        FILE* out = std::fopen(icd_json_path.c_str(), "w");
+        if (out) {
+            std::fprintf(out, "{\n  \"file_format_version\": \"1.0.0\",\n  \"ICD\": {\n    \"library_path\": \"%s\",\n    \"api_version\": \"1.3.0\"\n  }\n}\n", cand.c_str());
+            std::fclose(out);
+            set_env_variable("VK_ICD_FILENAMES", icd_json_path);
+            set_env_variable("VK_DRIVER_FILES", icd_json_path);
+            SOAR_LOG_INFO("Configured Vulkan NVIDIA hardware ICD: {}", icd_json_path);
+            return;
         }
     }
 #endif
