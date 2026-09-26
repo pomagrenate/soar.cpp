@@ -151,13 +151,21 @@ void DynamicLoader::unload() {
     vkCreateInstance = nullptr;
 }
 
-void DynamicLoader::configure_swiftshader_fallback() {
-    // Check if NVIDIA Vulkan ICD is available first
+void DynamicLoader::configure_nvidia_icd() {
+#if !defined(_WIN32) && !defined(__APPLE__)
+    if (std::getenv("VK_ICD_FILENAMES") || std::getenv("VK_DRIVER_FILES")) {
+        return;
+    }
     std::vector<std::string> nvidia_candidates = {
         "/usr/lib/x86_64-linux-gnu/libGLX_nvidia.so.0",
         "/usr/lib/x86_64-linux-gnu/libGLX_nvidia.so",
+        "/usr/local/nvidia/lib64/libGLX_nvidia.so.0",
+        "/usr/local/nvidia/lib64/libGLX_nvidia.so",
         "/usr/lib64/libGLX_nvidia.so.0",
-        "/usr/lib/libGLX_nvidia.so.0"
+        "/usr/lib/libGLX_nvidia.so.0",
+        "/usr/lib/x86_64-linux-gnu/libvulkan_nvidia.so",
+        "/usr/lib/x86_64-linux-gnu/libvulkan_nvidia.so.0",
+        "/usr/local/nvidia/lib64/libvulkan_nvidia.so"
     };
     for (const auto& cand : nvidia_candidates) {
         FILE* tf = std::fopen(cand.c_str(), "rb");
@@ -170,10 +178,18 @@ void DynamicLoader::configure_swiftshader_fallback() {
                 std::fclose(out);
                 set_env_variable("VK_ICD_FILENAMES", icd_json_path);
                 set_env_variable("VK_DRIVER_FILES", icd_json_path);
-                SOAR_LOG_INFO("Configured Vulkan NVIDIA ICD: {}", icd_json_path);
+                SOAR_LOG_INFO("Configured Vulkan NVIDIA hardware ICD: {}", icd_json_path);
                 return;
             }
         }
+    }
+#endif
+}
+
+void DynamicLoader::configure_swiftshader_fallback() {
+    configure_nvidia_icd();
+    if (std::getenv("VK_ICD_FILENAMES")) {
+        return;
     }
 
     std::vector<std::string> candidates = {
@@ -237,6 +253,8 @@ void DynamicLoader::configure_swiftshader_fallback() {
 }
 
 void DynamicLoader::load_library(const std::string& custom_lib_path) {
+    configure_nvidia_icd();
+
     if (library_handle_) {
         unload();
     }

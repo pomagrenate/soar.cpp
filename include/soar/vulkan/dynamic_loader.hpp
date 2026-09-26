@@ -51,6 +51,11 @@ public:
     void load_device_functions(VkDevice device);
 
     /**
+     * @brief Automatically configure NVIDIA ICD on Linux if driver library is found.
+     */
+    static void configure_nvidia_icd();
+
+    /**
      * @brief Automatically configure SwiftShader ICD fallback if hardware driver is not registered.
      */
     static void configure_swiftshader_fallback();
