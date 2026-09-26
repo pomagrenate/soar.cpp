@@ -17,11 +17,16 @@ struct DatasetSample {
     size_t orig_width{0};
 };
 
+struct Batch;
+
 /**
  * @brief Native C++ COCO format dataset parser and loader.
  */
 class COCODataset {
 public:
+    using BatchType = Batch;
+    using BatchRequestType = std::vector<size_t>;
+
     COCODataset(const std::string& images_dir,
                 const std::string& annotation_json_path,
                 int desired_channels = 1,
@@ -30,6 +35,7 @@ public:
 
     [[nodiscard]] size_t size() const noexcept { return image_records_.size(); }
     [[nodiscard]] DatasetSample get_sample(size_t index) const;
+    [[nodiscard]] Batch get_batch(const std::vector<size_t>& indices) const;
 
 private:
     struct ImageRecord {

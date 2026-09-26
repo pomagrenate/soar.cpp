@@ -1,4 +1,5 @@
 #include <soar/data/yolo_dataset.hpp>
+#include <soar/data/batch.hpp>
 #include <soar/data/image_io.hpp>
 #include <soar/data/polygon_rasterizer.hpp>
 #include <soar/nn/blocks.hpp>
@@ -7,6 +8,7 @@
 #include <fstream>
 #include <sstream>
 #include <filesystem>
+#include <cstring>
 
 namespace soar::data {
 
@@ -107,6 +109,46 @@ DatasetSample YOLODataset::get_sample(size_t index) const {
     }
 
     return sample;
+}
+
+Batch YOLODataset::get_batch(const std::vector<size_t>& indices) const {
+    size_t actual_bsz = indices.size();
+    if (actual_bsz == 0) return {};
+    Batch b;
+    std::vector<DatasetSample> samples;
+    samples.reserve(actual_bsz);
+    for (size_t idx : indices) {
+        samples.push_back(get_sample(idx));
+    }
+    if (actual_bsz == 1) {
+        b.data = samples[0].image;
+        b.target = samples[0].mask;
+        b.samples = std::move(samples);
+        return b;
+    }
+    size_t C = samples[0].image->dim(0);
+    size_t H = samples[0].image->dim(1);
+    size_t W = samples[0].image->dim(2);
+    size_t item_numel = C * H * W;
+    size_t mask_item_numel = H * W;
+
+    b.data = Tensor::create({static_cast<int64_t>(actual_bsz),
+                             static_cast<int64_t>(C),
+                             static_cast<int64_t>(H),
+                             static_cast<int64_t>(W)}, false);
+    b.target = Tensor::create({static_cast<int64_t>(actual_bsz),
+                               1,
+                               static_cast<int64_t>(H),
+                               static_cast<int64_t>(W)}, false);
+    float* dst_img = b.data->data();
+    float* dst_msk = b.target->data();
+
+    for (size_t i = 0; i < actual_bsz; ++i) {
+        std::memcpy(dst_img + i * item_numel, samples[i].image->data(), item_numel * sizeof(float));
+        std::memcpy(dst_msk + i * mask_item_numel, samples[i].mask->data(), mask_item_numel * sizeof(float));
+    }
+    b.samples = std::move(samples);
+    return b;
 }
 
 } // namespace soar::data

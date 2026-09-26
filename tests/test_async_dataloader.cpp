@@ -75,9 +75,119 @@ void test_async_dataloader_multithreaded() {
     std::cout << "  Passed asynchronous DataLoader prefetching with 4 worker threads." << std::endl;
 }
 
+void test_pytorch_exact_stateless_dataloader() {
+    std::cout << "[Test] PyTorch Native StatelessDataLoader with OrderedSequencer..." << std::endl;
+
+    struct NativeTorchDataset {
+        using BatchType = std::vector<int>;
+        using BatchRequestType = std::vector<size_t>;
+
+        size_t total_samples = 64;
+
+        [[nodiscard]] std::optional<size_t> size() const noexcept {
+            return total_samples;
+        }
+
+        BatchType get_batch(const std::vector<size_t>& indices) const {
+            // Simulate random worker sleep to test out-of-order reordering by OrderedSequencer
+            if (!indices.empty() && indices[0] % 2 == 0) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+            std::vector<int> batch;
+            batch.reserve(indices.size());
+            for (size_t idx : indices) {
+                batch.push_back(static_cast<int>(idx));
+            }
+            return batch;
+        }
+    };
+
+    NativeTorchDataset ds;
+    DataLoaderOptions opts;
+    opts.batch_size = 8;
+    opts.workers = 4;
+    opts.enforce_ordering = true;
+
+    auto loader = make_data_loader(ds, samplers::SequentialSampler(64), opts);
+
+    // Epoch 1
+    int expected_val = 0;
+    size_t batch_count = 0;
+    for (const auto& batch : *loader) {
+        assert(batch.size() == 8);
+        for (int val : batch) {
+            assert(val == expected_val);
+            expected_val++;
+        }
+        batch_count++;
+    }
+    assert(batch_count == 8);
+    assert(expected_val == 64);
+    std::cout << "  Epoch 1 passed: OrderedSequencer preserved exact order across 4 worker threads." << std::endl;
+
+    // Epoch 2 (verifies sampler reset)
+    expected_val = 0;
+    batch_count = 0;
+    for (const auto& batch : *loader) {
+        assert(batch.size() == 8);
+        for (int val : batch) {
+            assert(val == expected_val);
+            expected_val++;
+        }
+        batch_count++;
+    }
+    assert(batch_count == 8);
+    assert(expected_val == 64);
+    std::cout << "  Epoch 2 passed: DataLoader properly reset and re-streamed." << std::endl;
+}
+
+void test_pytorch_worker_exception() {
+    std::cout << "[Test] PyTorch WorkerException propagation..." << std::endl;
+
+    struct FaultyDataset {
+        using BatchType = std::vector<int>;
+        using BatchRequestType = std::vector<size_t>;
+
+        [[nodiscard]] std::optional<size_t> size() const noexcept {
+            return 32;
+        }
+
+        BatchType get_batch(const std::vector<size_t>& indices) const {
+            for (size_t idx : indices) {
+                if (idx == 10) {
+                    throw std::runtime_error("Simulated corrupted image sector on index 10");
+                }
+            }
+            return std::vector<int>(indices.begin(), indices.end());
+        }
+    };
+
+    FaultyDataset ds;
+    DataLoaderOptions opts;
+    opts.batch_size = 4;
+    opts.workers = 2;
+
+    auto loader = make_data_loader(ds, samplers::SequentialSampler(32), opts);
+
+    bool caught = false;
+    try {
+        for (const auto& batch : *loader) {
+            (void)batch;
+        }
+    } catch (const WorkerException& e) {
+        caught = true;
+        std::string msg = e.what();
+        assert(msg.find("Simulated corrupted image sector") != std::string::npos);
+        std::cout << "  Successfully caught WorkerException: " << e.what() << std::endl;
+    }
+    assert(caught);
+}
+
 int main() {
     std::cout << "=== Running SOAR DataLoader Tests ===" << std::endl;
     test_async_dataloader_multithreaded();
+    test_pytorch_exact_stateless_dataloader();
+    test_pytorch_worker_exception();
     std::cout << "ALL DATALOADER TESTS PASSED!" << std::endl;
     return 0;
 }

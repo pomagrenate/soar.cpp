@@ -11,6 +11,9 @@ namespace soar::data {
  */
 class YOLODataset {
 public:
+    using BatchType = Batch;
+    using BatchRequestType = std::vector<size_t>;
+
     YOLODataset(const std::string& images_dir,
                 const std::string& labels_dir,
                 int desired_channels = 1,
@@ -19,6 +22,7 @@ public:
 
     [[nodiscard]] size_t size() const noexcept { return image_files_.size(); }
     [[nodiscard]] DatasetSample get_sample(size_t index) const;
+    [[nodiscard]] Batch get_batch(const std::vector<size_t>& indices) const;
 
 private:
     std::string images_dir_;
