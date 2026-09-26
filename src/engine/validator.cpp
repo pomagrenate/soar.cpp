@@ -32,9 +32,12 @@ ValidationMetrics Validator::validate_sample(const TensorPtr& image, const Tenso
     double card = 0.0;
     double correct = 0.0;
 
+    float logit_thresh = (threshold_ > 0.0f && threshold_ < 1.0f) ? std::log(threshold_ / (1.0f - threshold_)) : 0.0f;
+
+    #pragma omp parallel for reduction(+:inter, union_sum, card, correct) schedule(static)
     for (size_t i = 0; i < n; ++i) {
-        float p = (1.0f / (1.0f + std::exp(-z[i]))) >= threshold_ ? 1.0f : 0.0f;
-        float t = y[i] >= 0.5f ? 1.0f : 0.0f;
+        float p = (z[i] >= logit_thresh) ? 1.0f : 0.0f;
+        float t = (y[i] >= 0.5f) ? 1.0f : 0.0f;
 
         if (p > 0.5f && t > 0.5f) inter += 1.0;
         if (p > 0.5f || t > 0.5f) union_sum += 1.0;
@@ -86,6 +89,9 @@ ValidationMetrics Validator::validate(const DatasetType& dataset,
     double total_pixels = 0.0;
 
     size_t vis_count = 0;
+    size_t val_step = 0;
+    size_t total_val = indices.size();
+    auto t_val_start = std::chrono::high_resolution_clock::now();
 
     for (size_t idx : indices) {
         auto sample = dataset.get_sample(idx);
@@ -109,14 +115,12 @@ ValidationMetrics Validator::validate(const DatasetType& dataset,
             prob_tensor = Tensor::zeros(sample.mask->shape());
         }
 
-        for (size_t i = 0; i < n; ++i) {
-            float prob = 1.0f / (1.0f + std::exp(-z[i]));
-            if (prob_tensor) {
-                prob_tensor->data()[i] = prob;
-            }
+        float logit_thresh = (threshold_ > 0.0f && threshold_ < 1.0f) ? std::log(threshold_ / (1.0f - threshold_)) : 0.0f;
 
-            float p = prob >= threshold_ ? 1.0f : 0.0f;
-            float t = y[i] >= 0.5f ? 1.0f : 0.0f;
+        #pragma omp parallel for reduction(+:total_inter, total_union, total_card, total_correct) schedule(static)
+        for (size_t i = 0; i < n; ++i) {
+            float p = (z[i] >= logit_thresh) ? 1.0f : 0.0f;
+            float t = (y[i] >= 0.5f) ? 1.0f : 0.0f;
 
             if (p > 0.5f && t > 0.5f) total_inter += 1.0;
             if (p > 0.5f || t > 0.5f) total_union += 1.0;
@@ -125,13 +129,31 @@ ValidationMetrics Validator::validate(const DatasetType& dataset,
             if (p == t) total_correct += 1.0;
         }
 
-        if (prob_tensor && !save_vis_dir.empty() && vis_count < max_visualizations) {
+        if (prob_tensor) {
+            for (size_t i = 0; i < n; ++i) {
+                prob_tensor->data()[i] = 1.0f / (1.0f + std::exp(-z[i]));
+            }
             std::string out_path = (std::filesystem::path(save_vis_dir) /
                                    ("val_sample_" + std::to_string(vis_count) + ".bmp")).string();
             data::ImageIO::save_comparison_bmp(out_path, sample.image, sample.mask, prob_tensor);
             vis_count++;
         }
+
+        val_step++;
+        auto t_now = std::chrono::high_resolution_clock::now();
+        double elapsed_sec = std::chrono::duration<double>(t_now - t_val_start).count();
+        double it_per_sec = (elapsed_sec > 0.0) ? (static_cast<double>(val_step) / elapsed_sec) : 0.0;
+        float curr_loss = static_cast<float>(total_loss / static_cast<double>(val_step));
+        float curr_dice = static_cast<float>((2.0 * total_inter + 1e-7) / (total_card + 1e-7));
+
+        std::cout << "\rValidating: " << std::setw(3) << static_cast<int>(float(val_step) / float(total_val) * 100.0f)
+                  << "%| " << val_step << "/" << total_val
+                  << " [" << std::fixed << std::setprecision(1) << it_per_sec << "it/s"
+                  << ", loss: " << std::setprecision(4) << curr_loss
+                  << ", dice: " << std::setprecision(4) << curr_dice
+                  << "]   " << std::flush;
     }
+    std::cout << std::endl;
 
     size_t count = indices.size();
     ValidationMetrics out;

@@ -11,6 +11,7 @@
 #include <soar/data/yolo_dataset.hpp>
 #include <soar/data/dataloader.hpp>
 #include <soar/vulkan/context.hpp>
+#include <soar/cuda/cuda_runtime.hpp>
 #include "palloc.h"
 
 #include <iostream>
@@ -271,6 +272,44 @@ void auto_detect_dataset_paths(const std::string& data_root,
     }
 }
 
+static void render_progress_bar(const std::string& prefix, size_t current, size_t total,
+                                double elapsed_sec, float loss, float dice, float iou, float lr) {
+    if (total == 0) return;
+    float pct = static_cast<float>(current) / static_cast<float>(total);
+    int bar_width = 15;
+    int filled = static_cast<int>(std::round(pct * bar_width));
+    filled = std::max(0, std::min(bar_width, filled));
+
+    std::string bar;
+    bar.reserve(bar_width);
+    for (int i = 0; i < filled; ++i) bar += "=";
+    if (filled < bar_width) bar += ">";
+    while (bar.size() < static_cast<size_t>(bar_width)) bar += " ";
+
+    double it_per_sec = (elapsed_sec > 0.0) ? (static_cast<double>(current) / elapsed_sec) : 0.0;
+    double sec_per_it = (current > 0) ? (elapsed_sec / static_cast<double>(current)) : 0.0;
+    double eta_sec = (it_per_sec > 0.0) ? (static_cast<double>(total - current) / it_per_sec) : 0.0;
+
+    int el_m = static_cast<int>(elapsed_sec) / 60;
+    int el_s = static_cast<int>(elapsed_sec) % 60;
+    int eta_m = static_cast<int>(eta_sec) / 60;
+    int eta_s = static_cast<int>(eta_sec) % 60;
+
+    std::cout << "\r" << prefix << " " << std::setw(3) << static_cast<int>(pct * 100.0f) << "%|"
+              << bar << "| " << current << "/" << total
+              << " [" << std::setfill('0') << std::setw(2) << el_m << ":" << std::setw(2) << el_s
+              << "<" << std::setw(2) << eta_m << ":" << std::setw(2) << eta_s;
+    if (it_per_sec >= 1.0) {
+        std::cout << ", " << std::setfill(' ') << std::fixed << std::setprecision(1) << it_per_sec << "it/s";
+    } else {
+        std::cout << ", " << std::setfill(' ') << std::fixed << std::setprecision(1) << sec_per_it << "s/it";
+    }
+    std::cout << ", loss: " << std::setprecision(4) << loss
+              << ", dice: " << std::setprecision(4) << dice
+              << ", lr: " << std::scientific << std::setprecision(1) << lr << std::defaultfloat
+              << "]   " << std::flush;
+}
+
 int main(int argc, char* argv[]) {
     if (argc < 2) {
         print_usage();
@@ -312,6 +351,7 @@ int main(int argc, char* argv[]) {
     size_t benchmark_h = 512;
     size_t benchmark_w = 512;
     std::string device_str = "auto";
+    size_t batch_size = 1;
     size_t img_h = 1024;
     size_t img_w = 1024;
 
@@ -325,6 +365,7 @@ int main(int argc, char* argv[]) {
         else if (arg == "--data-format" && i + 1 < argc) data_format = argv[++i];
         else if (arg == "--weights" && i + 1 < argc) weights_path = argv[++i];
         else if (arg == "--device" && i + 1 < argc) device_str = argv[++i];
+        else if ((arg == "--batch-size" || arg == "-b") && i + 1 < argc) batch_size = std::stoul(argv[++i]);
         else if (arg == "--img-size" && i + 1 < argc) {
             img_h = std::stoul(argv[++i]);
             if (i + 1 < argc && argv[i + 1][0] != '-') {
@@ -378,24 +419,40 @@ int main(int argc, char* argv[]) {
         std::cout << "[WARN] Config file '" << config_path << "' not found, using default Nano configuration." << std::endl;
     }
 
+    bool use_cuda = false;
     std::unique_ptr<soar::vk::VulkanContext> vk_ctx;
-    if (device_str != "cpu") {
+
+    if (device_str == "cuda" || device_str == "gpu" || device_str == "auto") {
+        int cuda_count = 0;
+        if (soar::cuda::cudaGetDeviceCount(&cuda_count) == soar::cuda::cudaSuccess && cuda_count > 0) {
+            std::cout << "[SOAR Engine] Native CUDA device initialized: "
+                      << cuda_count << " GPU device(s) active." << std::endl;
+            use_cuda = true;
+        } else if (device_str == "cuda") {
+            std::cout << "[WARN] CUDA requested but no active device detected. Falling back to CPU engine." << std::endl;
+        }
+    }
+
+    if (!use_cuda && (device_str == "vulkan" || device_str == "vk")) {
         try {
             vk_ctx = std::make_unique<soar::vk::VulkanContext>(false);
-            std::cout << "[SOAR Engine] GPU acceleration initialized on device: "
-                      << vk_ctx->device_info().device_name << std::endl;
-        } catch (const std::exception& e) {
-            if (device_str == "gpu" || device_str == "vulkan") {
-                std::cout << "[WARN] Vulkan GPU device requested but failed: " << e.what()
-                          << ". Falling back to multi-threaded CPU OpenMP engine." << std::endl;
+            if (vk_ctx->device_info().device_name.find("SwiftShader") != std::string::npos) {
+                std::cout << "[SOAR Engine] Vulkan device is CPU emulation (SwiftShader). Using native multi-threaded CPU OpenMP engine for optimal performance." << std::endl;
+                vk_ctx.reset();
             } else {
-                std::cout << "[SOAR Engine] Vulkan device not detected (" << e.what()
-                          << "). Running with multi-threaded CPU OpenMP engine." << std::endl;
+                std::cout << "[SOAR Engine] GPU acceleration initialized on device: "
+                          << vk_ctx->device_info().device_name << std::endl;
             }
+        } catch (const std::exception& e) {
+            std::cout << "[WARN] Vulkan GPU device requested but failed: " << e.what()
+                      << ". Falling back to multi-threaded CPU OpenMP engine." << std::endl;
             vk_ctx.reset();
         }
-    } else {
-        std::cout << "[SOAR Engine] Device set to CPU." << std::endl;
+    }
+
+    if (!use_cuda && !vk_ctx) {
+        std::cout << "[SOAR Engine] Hardware accelerator: Multi-threaded CPU OpenMP engine ("
+                  << std::thread::hardware_concurrency() << " concurrent threads active)." << std::endl;
     }
 
     auto model = std::make_shared<soar::nn::SOARModel>(m_cfg.in_channels, m_cfg.num_classes, m_cfg.variant);
@@ -490,16 +547,18 @@ int main(int argc, char* argv[]) {
 
             size_t n_workers = std::thread::hardware_concurrency() > 0 ? std::min(size_t(8), (size_t)std::thread::hardware_concurrency()) : 4;
             soar::data::DataLoaderOptions loader_opts;
-            loader_opts.batch_size = 1;
+            loader_opts.batch_size = batch_size;
             loader_opts.workers = n_workers;
             loader_opts.prefetch_factor = 4;
             loader_opts.shuffle = true;
             loader_opts.pin_memory = true;
 
             soar::data::DataLoader train_loader(ds, loader_opts, train_indices);
+            size_t total_train_batches = train_loader.total_batches();
 
             std::cout << "[SOAR Engine] Dataset loaded: " << total_samples << " total ("
-                      << train_count << " train, " << val_count << " val) | Asynchronous DataLoader workers: " << n_workers << std::endl;
+                      << train_count << " train, " << val_count << " val) | Physical batch size: " << batch_size
+                      << " | Asynchronous DataLoader workers: " << n_workers << std::endl;
 
             for (size_t ep = 0; ep < epochs; ++ep) {
                 auto t0_ep = std::chrono::high_resolution_clock::now();
@@ -510,8 +569,10 @@ int main(int argc, char* argv[]) {
                 double ep_train_iou = 0.0;
                 size_t step_idx = 0;
 
+                std::string ep_prefix = "Epoch " + std::to_string(ep + 1) + "/" + std::to_string(epochs) + ":";
+
                 for (const auto& batch : train_loader) {
-                    bool is_accumulating = ((step_idx + 1) % accumulate_grad_batches != 0) && ((step_idx + 1) != train_count);
+                    bool is_accumulating = ((step_idx + 1) % accumulate_grad_batches != 0) && ((step_idx + 1) != total_train_batches);
                     auto m = trainer.train_step(batch.data, batch.target, is_accumulating);
 
                     ep_train_loss += m.loss;
@@ -519,10 +580,19 @@ int main(int argc, char* argv[]) {
                     ep_train_iou += m.iou_score;
                     step_idx++;
 
+                    auto t_curr = std::chrono::high_resolution_clock::now();
+                    double elapsed_curr = std::chrono::duration<double>(t_curr - t0_ep).count();
+                    float curr_avg_dice = static_cast<float>(ep_train_dice / static_cast<double>(step_idx));
+                    float curr_avg_iou = static_cast<float>(ep_train_iou / static_cast<double>(step_idx));
+
+                    render_progress_bar(ep_prefix, step_idx, total_train_batches, elapsed_curr,
+                                        m.loss, curr_avg_dice, curr_avg_iou, m.lr);
+
                     if (!is_accumulating) {
                         ::pa_collect(false);
                     }
                 }
+                std::cout << std::endl;
 
                 float avg_train_loss = static_cast<float>(ep_train_loss / static_cast<double>(train_count));
                 float avg_train_dice = static_cast<float>(ep_train_dice / static_cast<double>(train_count));

@@ -31,9 +31,10 @@ StepMetrics Trainer::compute_metrics(const TensorPtr& logits, const TensorPtr& m
     double sum_pred = 0.0;
     double sum_target = 0.0;
 
+    #pragma omp parallel for reduction(+:inter, sum_pred, sum_target) schedule(static)
     for (size_t i = 0; i < n; ++i) {
-        float p = (1.0f / (1.0f + std::exp(-z[i]))) >= 0.5f ? 1.0f : 0.0f;
-        float t = y[i] >= 0.5f ? 1.0f : 0.0f;
+        float p = (z[i] >= 0.0f) ? 1.0f : 0.0f;
+        float t = (y[i] >= 0.5f) ? 1.0f : 0.0f;
         if (p > 0.5f && t > 0.5f) inter += 1.0;
         if (p > 0.5f) sum_pred += 1.0;
         if (t > 0.5f) sum_target += 1.0;
