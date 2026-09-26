@@ -152,8 +152,31 @@ void max_pool2d_backward(const float* /*grad_out*/, const int64_t* /*argmax*/, f
     throw DeviceError("CUDA kernel called but soar.cpp was compiled without CUDA compiler (nvcc).");
 }
 
+float bce_with_logits_forward(const float* /*logits*/, const float* /*targets*/,
+                              float /*weight*/, float /*pos_weight*/, size_t /*n*/, void* /*stream*/) {
+    throw DeviceError("CUDA kernel called but soar.cpp was compiled without CUDA compiler (nvcc).");
+}
+
 void bce_with_logits_backward(const float* /*logits*/, const float* /*targets*/, float* /*grad_logits*/,
                              float /*grad_out*/, float /*weight*/, float /*pos_weight*/, size_t /*n*/, void* /*stream*/) {
+    throw DeviceError("CUDA kernel called but soar.cpp was compiled without CUDA compiler (nvcc).");
+}
+
+float dice_loss_forward(const float* /*logits*/, const float* /*targets*/,
+                        float /*weight*/, float /*smooth*/, float& /*out_inter*/, float& /*out_sum_p*/, float& /*out_sum_y*/,
+                        size_t /*n*/, void* /*stream*/) {
+    throw DeviceError("CUDA kernel called but soar.cpp was compiled without CUDA compiler (nvcc).");
+}
+
+void dice_loss_backward(const float* /*logits*/, const float* /*targets*/, float* /*grad_logits*/,
+                        float /*grad_out*/, float /*weight*/, float /*smooth*/,
+                        float /*inter*/, float /*sum_p*/, float /*sum_y*/, size_t /*n*/, void* /*stream*/) {
+    throw DeviceError("CUDA kernel called but soar.cpp was compiled without CUDA compiler (nvcc).");
+}
+
+void dice_bce_loss_backward(const float* /*logits*/, const float* /*targets*/, float* /*grad_logits*/,
+                            float /*grad_out*/, float /*w*/, float /*bw*/, float /*dw*/, float /*pos_weight*/, float /*smooth*/,
+                            float /*inter*/, float /*sum_p*/, float /*sum_y*/, size_t /*n*/, void* /*stream*/) {
     throw DeviceError("CUDA kernel called but soar.cpp was compiled without CUDA compiler (nvcc).");
 }
 

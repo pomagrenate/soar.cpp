@@ -87,9 +87,22 @@ void group_norm_backward(const float* grad_out, const float* in, const float* ga
                          float* grad_in, float* grad_gamma, float* grad_beta,
                          size_t num_groups, size_t C, size_t HW, void* stream = nullptr);
 
-// BCE with Logits Loss Backward
+// Loss Functions
+float bce_with_logits_forward(const float* logits, const float* targets,
+                              float weight, float pos_weight, size_t n, void* stream = nullptr);
 void bce_with_logits_backward(const float* logits, const float* targets, float* grad_logits,
                              float grad_out, float weight, float pos_weight, size_t n, void* stream = nullptr);
+
+float dice_loss_forward(const float* logits, const float* targets,
+                        float weight, float smooth, float& out_inter, float& out_sum_p, float& out_sum_y,
+                        size_t n, void* stream = nullptr);
+void dice_loss_backward(const float* logits, const float* targets, float* grad_logits,
+                        float grad_out, float weight, float smooth,
+                        float inter, float sum_p, float sum_y, size_t n, void* stream = nullptr);
+
+void dice_bce_loss_backward(const float* logits, const float* targets, float* grad_logits,
+                            float grad_out, float w, float bw, float dw, float pos_weight, float smooth,
+                            float inter, float sum_p, float sum_y, size_t n, void* stream = nullptr);
 
 // AdamW Optimizer Step
 void adamw_step(float* theta, const float* g, float* m, float* v,

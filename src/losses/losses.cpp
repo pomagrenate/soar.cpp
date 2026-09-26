@@ -83,10 +83,26 @@ TensorPtr BCEWithLogitsLoss::forward(const TensorPtr& logits, const TensorPtr& t
             throw ShapeError("BCEWithLogitsLoss: shape mismatch between logits and targets");
         }
     }
-    if (logits->is_cuda()) logits->sync_to_host();
-    if (targets->is_cuda()) targets->sync_to_host();
-
     TensorPtr loss = Tensor::create({1}, logits->requires_grad());
+
+    if (logits->is_cuda()) {
+        if (targets && !targets->is_cuda()) targets->to_cuda();
+        float loss_val = soar::cuda::kernels::bce_with_logits_forward(
+            logits->cuda_data(), targets->cuda_data(), weight_, pos_weight_, logits->numel());
+        loss->item() = loss_val;
+
+        if (logits->requires_grad()) {
+            auto node = std::make_shared<BCENode>();
+            node->logits = logits;
+            node->targets = targets;
+            node->weight = weight_;
+            node->pos_weight = pos_weight_;
+            loss->set_grad_fn(node);
+        }
+        return loss;
+    }
+
+    if (targets->is_cuda()) targets->sync_to_host();
     const float* z = logits->data();
     const float* y = targets->data();
     size_t n = logits->numel();
@@ -121,8 +137,11 @@ TensorPtr BCEWithLogitsLoss::forward(const TensorPtr& logits, const TensorPtr& t
 struct DiceNode : public AutogradNode {
     TensorPtr logits;
     TensorPtr targets;
-    float weight;
-    float smooth;
+    float weight{1.0f};
+    float smooth{1.0f};
+    float inter{0.0f};
+    float sum_p{0.0f};
+    float sum_y{0.0f};
 
     std::vector<std::shared_ptr<AutogradNode>> get_inputs() const override {
         if (logits && logits->grad_fn()) return {logits->grad_fn()};
@@ -131,6 +150,17 @@ struct DiceNode : public AutogradNode {
 
     void backward(const TensorPtr& grad_output) override {
         if (!logits || !logits->requires_grad()) return;
+        if (logits->is_cuda()) {
+            if (targets && !targets->is_cuda()) targets->to_cuda();
+            TensorPtr grad_z = Tensor::zeros(logits->shape(), false, true);
+            float go = grad_output->item();
+            soar::cuda::kernels::dice_loss_backward(
+                logits->cuda_data(), targets->cuda_data(), grad_z->cuda_data(),
+                go, weight, smooth, inter, sum_p, sum_y, logits->numel());
+            propagate_grad(logits, grad_z);
+            return;
+        }
+
         TensorPtr grad_z = Tensor::zeros(logits->shape());
         const float* z = logits->data();
         const float* y = targets->data();
@@ -138,20 +168,20 @@ struct DiceNode : public AutogradNode {
         float go = grad_output->item();
         size_t n = logits->numel();
 
-        double inter = 0.0;
-        double sum_p = 0.0;
-        double sum_y = 0.0;
+        double inter_val = 0.0;
+        double sum_p_val = 0.0;
+        double sum_y_val = 0.0;
 
         for (size_t i = 0; i < n; ++i) {
             float pi = sigmoid_f(z[i]);
-            inter += pi * y[i];
-            sum_p += pi;
-            sum_y += y[i];
+            inter_val += pi * y[i];
+            sum_p_val += pi;
+            sum_y_val += y[i];
         }
 
-        double denom = sum_p + sum_y + smooth;
+        double denom = sum_p_val + sum_y_val + smooth;
         double denom_sq = denom * denom;
-        double numer = 2.0 * inter + smooth;
+        double numer = 2.0 * inter_val + smooth;
         float factor = go * weight;
 
         for (size_t i = 0; i < n; ++i) {
@@ -180,10 +210,31 @@ TensorPtr DiceLoss::forward(const TensorPtr& logits, const TensorPtr& targets) {
             throw ShapeError("DiceLoss: shape mismatch between logits and targets");
         }
     }
-    if (logits->is_cuda()) logits->sync_to_host();
-    if (targets->is_cuda()) targets->sync_to_host();
-
     TensorPtr loss = Tensor::create({1}, logits->requires_grad());
+
+    if (logits->is_cuda()) {
+        if (targets && !targets->is_cuda()) targets->to_cuda();
+        float out_inter = 0.0f, out_sum_p = 0.0f, out_sum_y = 0.0f;
+        float loss_val = soar::cuda::kernels::dice_loss_forward(
+            logits->cuda_data(), targets->cuda_data(), weight_, smooth_,
+            out_inter, out_sum_p, out_sum_y, logits->numel());
+        loss->item() = loss_val;
+
+        if (logits->requires_grad()) {
+            auto node = std::make_shared<DiceNode>();
+            node->logits = logits;
+            node->targets = targets;
+            node->weight = weight_;
+            node->smooth = smooth_;
+            node->inter = out_inter;
+            node->sum_p = out_sum_p;
+            node->sum_y = out_sum_y;
+            loss->set_grad_fn(node);
+        }
+        return loss;
+    }
+
+    if (targets->is_cuda()) targets->sync_to_host();
     const float* z = logits->data();
     const float* y = targets->data();
     size_t n = logits->numel();
@@ -208,6 +259,9 @@ TensorPtr DiceLoss::forward(const TensorPtr& logits, const TensorPtr& targets) {
         node->targets = targets;
         node->weight = weight_;
         node->smooth = smooth_;
+        node->inter = static_cast<float>(inter);
+        node->sum_p = static_cast<float>(sum_p);
+        node->sum_y = static_cast<float>(sum_y);
         loss->set_grad_fn(node);
     }
 
@@ -411,8 +465,17 @@ TensorPtr DiceBCELoss::forward(const TensorPtr& logits, const TensorPtr& targets
     TensorPtr bce_loss = bce_.forward(logits, targets);
     TensorPtr dice_loss = dice_.forward(logits, targets);
 
+    last_bce_ = bce_loss->item();
+    last_dice_ = dice_loss->item();
+
+    if (auto dn = std::dynamic_pointer_cast<DiceNode>(dice_loss->grad_fn())) {
+        last_inter_ = dn->inter;
+        last_sum_p_ = dn->sum_p;
+        last_sum_y_ = dn->sum_y;
+    }
+
     TensorPtr total = Tensor::create({1}, logits->requires_grad());
-    total->item() = weight_ * (bce_weight_ * bce_loss->item() + dice_weight_ * dice_loss->item());
+    total->item() = weight_ * (bce_weight_ * last_bce_ + dice_weight_ * last_dice_);
 
     if (logits->requires_grad()) {
         struct DiceBCENode : public AutogradNode {
@@ -423,6 +486,9 @@ TensorPtr DiceBCELoss::forward(const TensorPtr& logits, const TensorPtr& targets
             float dw;
             float pos_weight;
             float smooth;
+            float inter{0.0f};
+            float sum_p{0.0f};
+            float sum_y{0.0f};
 
             std::vector<std::shared_ptr<AutogradNode>> get_inputs() const override {
                 if (logits && logits->grad_fn()) return {logits->grad_fn()};
@@ -432,6 +498,17 @@ TensorPtr DiceBCELoss::forward(const TensorPtr& logits, const TensorPtr& targets
             void backward(const TensorPtr& grad_output) override {
                 if (!logits || !logits->requires_grad()) return;
                 float go = grad_output->item();
+
+                if (logits->is_cuda()) {
+                    if (targets && !targets->is_cuda()) targets->to_cuda();
+                    TensorPtr grad_z = Tensor::zeros(logits->shape(), false, true);
+                    soar::cuda::kernels::dice_bce_loss_backward(
+                        logits->cuda_data(), targets->cuda_data(), grad_z->cuda_data(),
+                        go, w, bw, dw, pos_weight, smooth, inter, sum_p, sum_y, logits->numel());
+                    propagate_grad(logits, grad_z);
+                    return;
+                }
+
                 TensorPtr grad_z = Tensor::zeros(logits->shape());
                 float* gz = grad_z->data();
                 const float* z = logits->data();
@@ -450,16 +527,16 @@ TensorPtr DiceBCELoss::forward(const TensorPtr& logits, const TensorPtr& targets
 
                 // 2. Dice gradient
                 if (dw > 0.0f) {
-                    double inter = 0.0, sum_p = 0.0, sum_y = 0.0;
+                    double inter_val = 0.0, sum_p_val = 0.0, sum_y_val = 0.0;
                     for (size_t i = 0; i < n; ++i) {
                         float pi = sigmoid_f(z[i]);
-                        inter += pi * y[i];
-                        sum_p += pi;
-                        sum_y += y[i];
+                        inter_val += pi * y[i];
+                        sum_p_val += pi;
+                        sum_y_val += y[i];
                     }
-                    double denom = sum_p + sum_y + smooth;
+                    double denom = sum_p_val + sum_y_val + smooth;
                     double denom_sq = denom * denom;
-                    double numer = 2.0 * inter + smooth;
+                    double numer = 2.0 * inter_val + smooth;
                     float scale_dice = go * w * dw;
                     for (size_t i = 0; i < n; ++i) {
                         float pi = sigmoid_f(z[i]);
@@ -472,6 +549,11 @@ TensorPtr DiceBCELoss::forward(const TensorPtr& logits, const TensorPtr& targets
 
                 propagate_grad(logits, grad_z);
             }
+
+            void release_variables() override {
+                logits = nullptr;
+                targets = nullptr;
+            }
         };
 
         auto node = std::make_shared<DiceBCENode>();
@@ -482,6 +564,9 @@ TensorPtr DiceBCELoss::forward(const TensorPtr& logits, const TensorPtr& targets
         node->dw = dice_weight_;
         node->pos_weight = bce_.pos_weight();
         node->smooth = dice_.smooth();
+        node->inter = last_inter_;
+        node->sum_p = last_sum_p_;
+        node->sum_y = last_sum_y_;
         total->set_grad_fn(node);
     }
 
@@ -1042,11 +1127,15 @@ TensorPtr SegmentationLoss::forward(const TensorPtr& logits, const TensorPtr& ta
 }
 
 TensorPtr SegmentationLoss::forward(const TensorPtr& logits, const TensorPtr& targets, float& out_bce, float& out_dice) {
-    BCEWithLogitsLoss bce_calc(1.0f, pos_weight_);
-    DiceLoss dice_calc(1.0f, 1.0f);
-    out_bce = bce_calc.forward(logits, targets)->item();
-    out_dice = dice_calc.forward(logits, targets)->item();
-    return forward(logits, targets, 0);
+    TensorPtr res = forward(logits, targets, 0);
+    if (auto dbc = std::dynamic_pointer_cast<DiceBCELoss>(region_)) {
+        out_bce = dbc->last_bce();
+        out_dice = dbc->last_dice();
+    } else {
+        out_bce = 0.0f;
+        out_dice = 0.0f;
+    }
+    return res;
 }
 
 TensorPtr SegmentationLoss::forward(const TensorPtr& logits, const TensorPtr& targets,

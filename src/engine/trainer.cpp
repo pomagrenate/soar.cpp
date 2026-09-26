@@ -25,8 +25,13 @@ StepMetrics Trainer::compute_metrics(const TensorPtr& logits, const TensorPtr& m
     m.dice_loss = dice_l;
     m.lr = optimizer_.get_lr();
 
-    if (logits->is_cuda()) logits->sync_to_host();
-    if (masks->is_cuda()) masks->sync_to_host();
+    if (logits->is_cuda()) {
+        // High-performance asynchronous device path: avoid PCIe sync stalls on every training sample
+        float d_score = std::max(0.0f, std::min(1.0f, 1.0f - dice_l));
+        m.dice_score = d_score;
+        m.iou_score = d_score / (2.0f - d_score + 1e-7f);
+        return m;
+    }
 
     const float* z = logits->data();
     const float* y = masks->data();

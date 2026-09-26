@@ -583,7 +583,8 @@ int main(int argc, char* argv[]) {
                     double vram_gb = static_cast<double>(prop.totalGlobalMem) / (1024.0 * 1024.0 * 1024.0);
                     std::cout << "  Device [" << dev << "]:             " << prop.name
                               << " (SM " << prop.major << "." << prop.minor << ", "
-                              << std::fixed << std::setprecision(2) << vram_gb << " GB Dedicated VRAM)\n";
+                              << std::fixed << std::setprecision(2) << vram_gb << " GB Dedicated VRAM)\n"
+                              << std::defaultfloat;
                 }
             }
             std::cout << "=================================================================\n\n";

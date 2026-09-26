@@ -122,18 +122,36 @@ __global__ void k_group_norm_backward_params(
     const float* __restrict__ rstd,
     float* __restrict__ grad_gamma,
     float* __restrict__ grad_beta,
-    int64_t total,
+    int64_t C,
     int64_t channels_per_group,
     int64_t HW) {
-    CUDA_KERNEL_LOOP(idx, total) {
-        int64_t c = idx / HW;
-        int64_t g = c / channels_per_group;
-        float dy = grad_out[idx];
-        float x = in[idx];
-        float norm = (x - mean[g]) * rstd[g];
+    int64_t c = blockIdx.x;
+    if (c >= C) return;
 
-        if (grad_gamma) atomicAdd(&grad_gamma[c], dy * norm);
-        if (grad_beta) atomicAdd(&grad_beta[c], dy);
+    int64_t g = c / channels_per_group;
+    float m = mean[g];
+    float r = rstd[g];
+
+    const float* go = grad_out + c * HW;
+    const float* inp = in + c * HW;
+
+    float sum_gamma = 0.0f;
+    float sum_beta = 0.0f;
+
+    for (int64_t hw = threadIdx.x; hw < HW; hw += blockDim.x) {
+        float dy = go[hw];
+        float x = inp[hw];
+        float norm = (x - m) * r;
+        if (grad_gamma) sum_gamma += dy * norm;
+        if (grad_beta) sum_beta += dy;
+    }
+
+    if (grad_gamma) sum_gamma = block_reduce_sum(sum_gamma);
+    if (grad_beta) sum_beta = block_reduce_sum(sum_beta);
+
+    if (threadIdx.x == 0) {
+        if (grad_gamma) grad_gamma[c] += sum_gamma;
+        if (grad_beta) grad_beta[c] += sum_beta;
     }
 }
 
@@ -243,9 +261,8 @@ void group_norm_backward(const float* grad_out, const float* in, const float* ga
 
     // 1. Accumulate parameter gradients
     if (grad_gamma || grad_beta) {
-        int blocks = GET_BLOCKS(total);
-        k_group_norm_backward_params<<<blocks, CUDA_NUM_THREADS, 0, s>>>(
-            grad_out, in, saved_mean, saved_rstd, grad_gamma, grad_beta, total, cpg, static_cast<int64_t>(HW));
+        k_group_norm_backward_params<<<static_cast<unsigned int>(C), 256, 0, s>>>(
+            grad_out, in, saved_mean, saved_rstd, grad_gamma, grad_beta, static_cast<int64_t>(C), cpg, static_cast<int64_t>(HW));
     }
 
     // 2. Compute input gradients if needed

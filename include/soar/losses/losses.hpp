@@ -132,12 +132,19 @@ public:
 
     [[nodiscard]] float bce_weight() const noexcept { return bce_weight_; }
     [[nodiscard]] float dice_weight() const noexcept { return dice_weight_; }
+    [[nodiscard]] float last_bce() const noexcept { return last_bce_; }
+    [[nodiscard]] float last_dice() const noexcept { return last_dice_; }
 
 private:
     float dice_weight_{1.0f};
     float bce_weight_{1.0f};
     BCEWithLogitsLoss bce_;
     DiceLoss dice_;
+    float last_bce_{0.0f};
+    float last_dice_{0.0f};
+    float last_inter_{0.0f};
+    float last_sum_p_{0.0f};
+    float last_sum_y_{0.0f};
 };
 
 /**

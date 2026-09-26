@@ -58,4 +58,25 @@ __inline__ __device__ T warp_reduce_sum(T val) {
     return val;
 }
 
+// Block reduce sum across up to 1024 threads using shared memory
+template <typename T>
+__inline__ __device__ T block_reduce_sum(T val) {
+    __shared__ T shared[32];
+    int lane = threadIdx.x % 32;
+    int wid = threadIdx.x / 32;
+
+    val = warp_reduce_sum(val);
+    if (lane == 0) {
+        shared[wid] = val;
+    }
+    __syncthreads();
+
+    int num_warps = (blockDim.x + 31) / 32;
+    T bsum = (lane < num_warps) ? shared[lane] : T(0);
+    if (wid == 0) {
+        bsum = warp_reduce_sum(bsum);
+    }
+    return bsum;
+}
+
 } // namespace soar::cuda

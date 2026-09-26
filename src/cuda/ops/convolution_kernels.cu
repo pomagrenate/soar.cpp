@@ -59,35 +59,48 @@ __global__ void k_conv2d_1x1_backward_input(
     }
 }
 
-__global__ void k_conv2d_1x1_backward_weight_bias(
+__global__ void k_conv2d_1x1_backward_weight(
     const float* __restrict__ grad_out,
     const float* __restrict__ in,
     float* __restrict__ grad_weight,
-    float* __restrict__ grad_bias,
     int64_t C_in,
     int64_t C_out,
     int64_t HW) {
-    int64_t total = C_out * C_in;
-    CUDA_KERNEL_LOOP(idx, total) {
-        int64_t co = idx / C_in;
-        int64_t ci = idx % C_in;
+    int64_t pair_idx = blockIdx.x;
+    if (pair_idx >= C_out * C_in) return;
 
-        const float* go_row = grad_out + co * HW;
-        const float* in_row = in + ci * HW;
+    int64_t co = pair_idx / C_in;
+    int64_t ci = pair_idx % C_in;
 
-        float sum_w = 0.0f;
-        for (int64_t hw = 0; hw < HW; ++hw) {
-            sum_w += go_row[hw] * in_row[hw];
-        }
-        grad_weight[idx] += sum_w;
+    const float* go_row = grad_out + co * HW;
+    const float* in_row = in + ci * HW;
 
-        if (grad_bias && ci == 0) {
-            float sum_b = 0.0f;
-            for (int64_t hw = 0; hw < HW; ++hw) {
-                sum_b += go_row[hw];
-            }
-            grad_bias[co] += sum_b;
-        }
+    float sum_w = 0.0f;
+    for (int64_t hw = threadIdx.x; hw < HW; hw += blockDim.x) {
+        sum_w += go_row[hw] * in_row[hw];
+    }
+    sum_w = block_reduce_sum(sum_w);
+    if (threadIdx.x == 0) {
+        grad_weight[pair_idx] += sum_w;
+    }
+}
+
+__global__ void k_conv2d_1x1_backward_bias(
+    const float* __restrict__ grad_out,
+    float* __restrict__ grad_bias,
+    int64_t C_out,
+    int64_t HW) {
+    int64_t co = blockIdx.x;
+    if (co >= C_out) return;
+
+    const float* go_row = grad_out + co * HW;
+    float sum_b = 0.0f;
+    for (int64_t hw = threadIdx.x; hw < HW; hw += blockDim.x) {
+        sum_b += go_row[hw];
+    }
+    sum_b = block_reduce_sum(sum_b);
+    if (threadIdx.x == 0) {
+        grad_bias[co] += sum_b;
     }
 }
 
@@ -107,9 +120,16 @@ void conv2d_1x1_backward(const float* grad_out, const float* in, const float* we
     }
     if (grad_weight && in) {
         int64_t total_w = cout * cin;
-        int blocks = GET_BLOCKS(total_w);
-        k_conv2d_1x1_backward_weight_bias<<<blocks, CUDA_NUM_THREADS, 0, s>>>(
-            grad_out, in, grad_weight, grad_bias, cin, cout, hw);
+        if (total_w > 0) {
+            k_conv2d_1x1_backward_weight<<<static_cast<unsigned int>(total_w), 256, 0, s>>>(
+                grad_out, in, grad_weight, cin, cout, hw);
+        }
+    }
+    if (grad_bias && grad_out) {
+        if (cout > 0) {
+            k_conv2d_1x1_backward_bias<<<static_cast<unsigned int>(cout), 256, 0, s>>>(
+                grad_out, grad_bias, cout, hw);
+        }
     }
 }
 
@@ -217,11 +237,10 @@ __global__ void k_conv2d_dw_backward_input(
     }
 }
 
-__global__ void k_conv2d_dw_backward_weight_bias(
+__global__ void k_conv2d_dw_backward_weight(
     const float* __restrict__ grad_out,
     const float* __restrict__ in,
     float* __restrict__ grad_weight,
-    float* __restrict__ grad_bias,
     int64_t C,
     int64_t H_in,
     int64_t W_in,
@@ -231,37 +250,50 @@ __global__ void k_conv2d_dw_backward_weight_bias(
     int64_t pad,
     int64_t stride,
     int64_t dil) {
-    int64_t total = C * K * K;
-    CUDA_KERNEL_LOOP(idx, total) {
-        int64_t kw = idx % K;
-        int64_t temp = idx / K;
-        int64_t kh = temp % K;
-        int64_t c = temp / K;
+    int64_t pair_idx = blockIdx.x;
+    if (pair_idx >= C * K * K) return;
 
-        const float* go = grad_out + c * (H_out * W_out);
-        const float* inp = in + c * (H_in * W_in);
+    int64_t kw = pair_idx % K;
+    int64_t temp = pair_idx / K;
+    int64_t kh = temp % K;
+    int64_t c = temp / K;
 
-        float sum_w = 0.0f;
-        for (int64_t ho = 0; ho < H_out; ++ho) {
-            int64_t hi = ho * stride - pad + kh * dil;
-            if (hi >= 0 && hi < H_in) {
-                for (int64_t wo = 0; wo < W_out; ++wo) {
-                    int64_t wi = wo * stride - pad + kw * dil;
-                    if (wi >= 0 && wi < W_in) {
-                        sum_w += go[ho * W_out + wo] * inp[hi * W_in + wi];
-                    }
-                }
-            }
+    int64_t HW_out = H_out * W_out;
+    const float* go = grad_out + c * HW_out;
+    const float* inp = in + c * (H_in * W_in);
+
+    float sum_w = 0.0f;
+    for (int64_t idx = threadIdx.x; idx < HW_out; idx += blockDim.x) {
+        int64_t ho = idx / W_out;
+        int64_t wo = idx % W_out;
+        int64_t hi = ho * stride - pad + kh * dil;
+        int64_t wi = wo * stride - pad + kw * dil;
+        if (hi >= 0 && hi < H_in && wi >= 0 && wi < W_in) {
+            sum_w += go[idx] * inp[hi * W_in + wi];
         }
-        grad_weight[idx] += sum_w;
+    }
+    sum_w = block_reduce_sum(sum_w);
+    if (threadIdx.x == 0) {
+        grad_weight[pair_idx] += sum_w;
+    }
+}
 
-        if (grad_bias && kh == 0 && kw == 0) {
-            float sum_b = 0.0f;
-            for (int64_t i = 0; i < H_out * W_out; ++i) {
-                sum_b += go[i];
-            }
-            grad_bias[c] += sum_b;
-        }
+__global__ void k_conv2d_dw_backward_bias(
+    const float* __restrict__ grad_out,
+    float* __restrict__ grad_bias,
+    int64_t C,
+    int64_t HW_out) {
+    int64_t c = blockIdx.x;
+    if (c >= C) return;
+
+    const float* go = grad_out + c * HW_out;
+    float sum_b = 0.0f;
+    for (int64_t idx = threadIdx.x; idx < HW_out; idx += blockDim.x) {
+        sum_b += go[idx];
+    }
+    sum_b = block_reduce_sum(sum_b);
+    if (threadIdx.x == 0) {
+        grad_bias[c] += sum_b;
     }
 }
 
@@ -288,9 +320,16 @@ void conv2d_dw_backward(const float* grad_out, const float* in, const float* wei
     }
     if (grad_weight && in) {
         int64_t total_w = c * k * k;
-        int blocks = GET_BLOCKS(total_w);
-        k_conv2d_dw_backward_weight_bias<<<blocks, CUDA_NUM_THREADS, 0, s>>>(
-            grad_out, in, grad_weight, grad_bias, c, hin, win, hout, wout, k, p, st, d);
+        if (total_w > 0) {
+            k_conv2d_dw_backward_weight<<<static_cast<unsigned int>(total_w), 256, 0, s>>>(
+                grad_out, in, grad_weight, c, hin, win, hout, wout, k, p, st, d);
+        }
+    }
+    if (grad_bias && grad_out) {
+        if (c > 0) {
+            k_conv2d_dw_backward_bias<<<static_cast<unsigned int>(c), 256, 0, s>>>(
+                grad_out, grad_bias, c, hout * wout);
+        }
     }
 }
 
