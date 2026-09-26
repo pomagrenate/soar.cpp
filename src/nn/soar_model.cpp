@@ -1,4 +1,5 @@
 #include <soar/nn/soar_model.hpp>
+#include <soar/cuda/cuda_runtime.hpp>
 #include <soar/autograd/node.hpp>
 #include <soar/core/logging.hpp>
 
@@ -278,6 +279,56 @@ size_t SOARModel::parameter_count() const {
 }
 
 TensorPtr SOARModel::forward(const TensorPtr& input) {
+    if (input->ndim() == 4) {
+        size_t B = input->dim(0);
+        size_t C = input->dim(1);
+        size_t H_in = input->dim(2);
+        size_t W_in = input->dim(3);
+        size_t item_numel = C * H_in * W_in;
+
+        if (B == 1) {
+            auto s3 = Tensor::create({static_cast<int64_t>(C), static_cast<int64_t>(H_in), static_cast<int64_t>(W_in)}, input->requires_grad(), input->is_cuda());
+            if (input->is_cuda()) {
+                soar::cuda::cudaMemcpyAsync(s3->cuda_data(), input->cuda_data(), item_numel * sizeof(float), soar::cuda::cudaMemcpyDeviceToDevice);
+            } else {
+                std::memcpy(s3->data(), input->data(), item_numel * sizeof(float));
+            }
+            TensorPtr out3 = forward(s3);
+            auto out4 = Tensor::create({1, out3->dim(0), out3->dim(1), out3->dim(2)}, out3->requires_grad(), out3->is_cuda());
+            if (out3->is_cuda()) {
+                soar::cuda::cudaMemcpyAsync(out4->cuda_data(), out3->cuda_data(), out3->numel() * sizeof(float), soar::cuda::cudaMemcpyDeviceToDevice);
+            } else {
+                std::memcpy(out4->data(), out3->data(), out3->numel() * sizeof(float));
+            }
+            return out4;
+        } else {
+            std::vector<TensorPtr> batch_outs;
+            batch_outs.reserve(B);
+            for (size_t b = 0; b < B; ++b) {
+                auto s3 = Tensor::create({static_cast<int64_t>(C), static_cast<int64_t>(H_in), static_cast<int64_t>(W_in)}, input->requires_grad(), input->is_cuda());
+                if (input->is_cuda()) {
+                    soar::cuda::cudaMemcpyAsync(s3->cuda_data(), input->cuda_data() + b * item_numel, item_numel * sizeof(float), soar::cuda::cudaMemcpyDeviceToDevice);
+                } else {
+                    std::memcpy(s3->data(), input->data() + b * item_numel, item_numel * sizeof(float));
+                }
+                batch_outs.push_back(forward(s3));
+            }
+            size_t out_c = batch_outs[0]->dim(0);
+            size_t out_h = batch_outs[0]->dim(1);
+            size_t out_w = batch_outs[0]->dim(2);
+            size_t out_numel = out_c * out_h * out_w;
+            auto out4 = Tensor::create({static_cast<int64_t>(B), static_cast<int64_t>(out_c), static_cast<int64_t>(out_h), static_cast<int64_t>(out_w)}, input->requires_grad(), input->is_cuda());
+            for (size_t b = 0; b < B; ++b) {
+                if (input->is_cuda()) {
+                    soar::cuda::cudaMemcpyAsync(out4->cuda_data() + b * out_numel, batch_outs[b]->cuda_data(), out_numel * sizeof(float), soar::cuda::cudaMemcpyDeviceToDevice);
+                } else {
+                    std::memcpy(out4->data() + b * out_numel, batch_outs[b]->data(), out_numel * sizeof(float));
+                }
+            }
+            return out4;
+        }
+    }
+
     constexpr size_t DIVISOR = 32;
     size_t H = input->dim(1);
     size_t W = input->dim(2);

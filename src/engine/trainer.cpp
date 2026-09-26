@@ -1,5 +1,7 @@
 #include <soar/engine/trainer.hpp>
+#include <soar/cuda/cuda_runtime.hpp>
 #include <cmath>
+#include <cstring>
 #include <algorithm>
 #include <iostream>
 
@@ -52,23 +54,114 @@ StepMetrics Trainer::compute_metrics(const TensorPtr& logits, const TensorPtr& m
 StepMetrics Trainer::train_step(const TensorPtr& images, const TensorPtr& masks, bool is_accumulating) {
     model_->train(true);
 
-    if (model_->is_cuda()) {
-        if (!images->is_cuda()) images->to_cuda();
-        if (!masks->is_cuda()) masks->to_cuda();
+    size_t B = (images->ndim() == 4) ? images->dim(0) : 1;
+    size_t C = (images->ndim() == 4) ? images->dim(1) : images->dim(0);
+    size_t H = (images->ndim() == 4) ? images->dim(2) : images->dim(1);
+    size_t W = (images->ndim() == 4) ? images->dim(3) : images->dim(2);
+
+    if (B <= 1) {
+        TensorPtr img = images;
+        TensorPtr msk = masks;
+        if (images->ndim() == 4) {
+            img = Tensor::create({static_cast<int64_t>(C), static_cast<int64_t>(H), static_cast<int64_t>(W)}, false, images->is_cuda());
+            if (images->is_cuda()) {
+                soar::cuda::cudaMemcpyAsync(img->cuda_data(), images->cuda_data(), C * H * W * sizeof(float), soar::cuda::cudaMemcpyDeviceToDevice);
+            } else {
+                std::memcpy(img->data(), images->data(), C * H * W * sizeof(float));
+            }
+        }
+        if (masks->ndim() == 4) {
+            size_t mc = masks->dim(1);
+            msk = Tensor::create({static_cast<int64_t>(mc), static_cast<int64_t>(H), static_cast<int64_t>(W)}, false, masks->is_cuda());
+            if (masks->is_cuda()) {
+                soar::cuda::cudaMemcpyAsync(msk->cuda_data(), masks->cuda_data(), mc * H * W * sizeof(float), soar::cuda::cudaMemcpyDeviceToDevice);
+            } else {
+                std::memcpy(msk->data(), masks->data(), mc * H * W * sizeof(float));
+            }
+        }
+
+        if (model_->is_cuda()) {
+            if (!img->is_cuda()) img->to_cuda();
+            if (!msk->is_cuda()) msk->to_cuda();
+        }
+
+        img->set_requires_grad(false);
+        TensorPtr logits = model_->forward(img);
+
+        float bce_l = 0.0f;
+        float dice_l = 0.0f;
+        TensorPtr loss = loss_fn_.forward(logits, msk, bce_l, dice_l);
+
+        float scale = 1.0f / static_cast<float>(accumulate_grad_batches_);
+        TensorPtr grad_out = Tensor::create({1});
+        grad_out->item() = scale;
+        loss->backward(grad_out);
+
+        if (!is_accumulating) {
+            optimizer_.clip_grad_norm(grad_clip_);
+            optimizer_.step();
+            optimizer_.zero_grad();
+        }
+
+        StepMetrics m = compute_metrics(logits, msk, loss->item(), bce_l, dice_l);
+        logits->set_grad_fn(nullptr);
+        loss->set_grad_fn(nullptr);
+        return m;
     }
 
-    images->set_requires_grad(false);
-    TensorPtr logits = model_->forward(images);
+    // Multi-sample batch: process micro-batches of 1 sample to strictly cap VRAM
+    double total_loss = 0.0;
+    double total_bce = 0.0;
+    double total_dice = 0.0;
+    double total_iou = 0.0;
+    double total_dice_score = 0.0;
 
-    float bce_l = 0.0f;
-    float dice_l = 0.0f;
-    TensorPtr loss = loss_fn_.forward(logits, masks, bce_l, dice_l);
+    size_t img_sample_numel = C * H * W;
+    size_t msk_c = (masks->ndim() == 4) ? masks->dim(1) : 1;
+    size_t msk_sample_numel = msk_c * H * W;
 
-    // Virtual batch scaling via gradient accumulation (loss / accumulate_grad_batches)
-    float scale = 1.0f / static_cast<float>(accumulate_grad_batches_);
-    TensorPtr grad_out = Tensor::create({1});
-    grad_out->item() = scale;
-    loss->backward(grad_out);
+    for (size_t b = 0; b < B; ++b) {
+        TensorPtr img_b = Tensor::create({static_cast<int64_t>(C), static_cast<int64_t>(H), static_cast<int64_t>(W)}, false, images->is_cuda());
+        if (images->is_cuda()) {
+            soar::cuda::cudaMemcpyAsync(img_b->cuda_data(), images->cuda_data() + b * img_sample_numel, img_sample_numel * sizeof(float), soar::cuda::cudaMemcpyDeviceToDevice);
+        } else {
+            std::memcpy(img_b->data(), images->data() + b * img_sample_numel, img_sample_numel * sizeof(float));
+        }
+
+        TensorPtr msk_b = Tensor::create({static_cast<int64_t>(msk_c), static_cast<int64_t>(H), static_cast<int64_t>(W)}, false, masks->is_cuda());
+        if (masks->is_cuda()) {
+            soar::cuda::cudaMemcpyAsync(msk_b->cuda_data(), masks->cuda_data() + b * msk_sample_numel, msk_sample_numel * sizeof(float), soar::cuda::cudaMemcpyDeviceToDevice);
+        } else {
+            std::memcpy(msk_b->data(), masks->data() + b * msk_sample_numel, msk_sample_numel * sizeof(float));
+        }
+
+        if (model_->is_cuda()) {
+            if (!img_b->is_cuda()) img_b->to_cuda();
+            if (!msk_b->is_cuda()) msk_b->to_cuda();
+        }
+
+        img_b->set_requires_grad(false);
+        TensorPtr logits_b = model_->forward(img_b);
+
+        float bce_sub = 0.0f;
+        float dice_sub = 0.0f;
+        TensorPtr loss_b = loss_fn_.forward(logits_b, msk_b, bce_sub, dice_sub);
+
+        float scale = 1.0f / static_cast<float>(B * accumulate_grad_batches_);
+        TensorPtr grad_out = Tensor::create({1});
+        grad_out->item() = scale;
+        loss_b->backward(grad_out);
+
+        StepMetrics sub_m = compute_metrics(logits_b, msk_b, loss_b->item(), bce_sub, dice_sub);
+        total_loss += sub_m.loss;
+        total_bce += sub_m.bce_loss;
+        total_dice += sub_m.dice_loss;
+        total_iou += sub_m.iou_score;
+        total_dice_score += sub_m.dice_score;
+
+        logits_b->set_grad_fn(nullptr);
+        loss_b->set_grad_fn(nullptr);
+    }
 
     if (!is_accumulating) {
         optimizer_.clip_grad_norm(grad_clip_);
@@ -76,9 +169,13 @@ StepMetrics Trainer::train_step(const TensorPtr& images, const TensorPtr& masks,
         optimizer_.zero_grad();
     }
 
-    StepMetrics m = compute_metrics(logits, masks, loss->item(), bce_l, dice_l);
-    logits->set_grad_fn(nullptr);
-    loss->set_grad_fn(nullptr);
+    StepMetrics m;
+    m.loss = static_cast<float>(total_loss / static_cast<double>(B));
+    m.bce_loss = static_cast<float>(total_bce / static_cast<double>(B));
+    m.dice_loss = static_cast<float>(total_dice / static_cast<double>(B));
+    m.iou_score = static_cast<float>(total_iou / static_cast<double>(B));
+    m.dice_score = static_cast<float>(total_dice_score / static_cast<double>(B));
+    m.lr = optimizer_.get_lr();
     return m;
 }
 
@@ -90,15 +187,96 @@ void Trainer::step_scheduler() {
 
 StepMetrics Trainer::evaluate_step(const TensorPtr& images, const TensorPtr& masks) {
     model_->eval();
-    if (model_->is_cuda()) {
-        if (!images->is_cuda()) images->to_cuda();
-        if (!masks->is_cuda()) masks->to_cuda();
+
+    size_t B = (images->ndim() == 4) ? images->dim(0) : 1;
+    size_t C = (images->ndim() == 4) ? images->dim(1) : images->dim(0);
+    size_t H = (images->ndim() == 4) ? images->dim(2) : images->dim(1);
+    size_t W = (images->ndim() == 4) ? images->dim(3) : images->dim(2);
+
+    if (B <= 1) {
+        TensorPtr img = images;
+        TensorPtr msk = masks;
+        if (images->ndim() == 4) {
+            img = Tensor::create({static_cast<int64_t>(C), static_cast<int64_t>(H), static_cast<int64_t>(W)}, false, images->is_cuda());
+            if (images->is_cuda()) {
+                soar::cuda::cudaMemcpyAsync(img->cuda_data(), images->cuda_data(), C * H * W * sizeof(float), soar::cuda::cudaMemcpyDeviceToDevice);
+            } else {
+                std::memcpy(img->data(), images->data(), C * H * W * sizeof(float));
+            }
+        }
+        if (masks->ndim() == 4) {
+            size_t mc = masks->dim(1);
+            msk = Tensor::create({static_cast<int64_t>(mc), static_cast<int64_t>(H), static_cast<int64_t>(W)}, false, masks->is_cuda());
+            if (masks->is_cuda()) {
+                soar::cuda::cudaMemcpyAsync(msk->cuda_data(), masks->cuda_data(), mc * H * W * sizeof(float), soar::cuda::cudaMemcpyDeviceToDevice);
+            } else {
+                std::memcpy(msk->data(), masks->data(), mc * H * W * sizeof(float));
+            }
+        }
+
+        if (model_->is_cuda()) {
+            if (!img->is_cuda()) img->to_cuda();
+            if (!msk->is_cuda()) msk->to_cuda();
+        }
+
+        TensorPtr logits = model_->forward(img);
+        float bce_l = 0.0f;
+        float dice_l = 0.0f;
+        TensorPtr loss = loss_fn_.forward(logits, msk, bce_l, dice_l);
+        return compute_metrics(logits, msk, loss->item(), bce_l, dice_l);
     }
-    TensorPtr logits = model_->forward(images);
-    float bce_l = 0.0f;
-    float dice_l = 0.0f;
-    TensorPtr loss = loss_fn_.forward(logits, masks, bce_l, dice_l);
-    return compute_metrics(logits, masks, loss->item(), bce_l, dice_l);
+
+    double total_loss = 0.0;
+    double total_bce = 0.0;
+    double total_dice = 0.0;
+    double total_iou = 0.0;
+    double total_dice_score = 0.0;
+
+    size_t img_sample_numel = C * H * W;
+    size_t msk_c = (masks->ndim() == 4) ? masks->dim(1) : 1;
+    size_t msk_sample_numel = msk_c * H * W;
+
+    for (size_t b = 0; b < B; ++b) {
+        TensorPtr img_b = Tensor::create({static_cast<int64_t>(C), static_cast<int64_t>(H), static_cast<int64_t>(W)}, false, images->is_cuda());
+        if (images->is_cuda()) {
+            soar::cuda::cudaMemcpyAsync(img_b->cuda_data(), images->cuda_data() + b * img_sample_numel, img_sample_numel * sizeof(float), soar::cuda::cudaMemcpyDeviceToDevice);
+        } else {
+            std::memcpy(img_b->data(), images->data() + b * img_sample_numel, img_sample_numel * sizeof(float));
+        }
+
+        TensorPtr msk_b = Tensor::create({static_cast<int64_t>(msk_c), static_cast<int64_t>(H), static_cast<int64_t>(W)}, false, masks->is_cuda());
+        if (masks->is_cuda()) {
+            soar::cuda::cudaMemcpyAsync(msk_b->cuda_data(), masks->cuda_data() + b * msk_sample_numel, msk_sample_numel * sizeof(float), soar::cuda::cudaMemcpyDeviceToDevice);
+        } else {
+            std::memcpy(msk_b->data(), masks->data() + b * msk_sample_numel, msk_sample_numel * sizeof(float));
+        }
+
+        if (model_->is_cuda()) {
+            if (!img_b->is_cuda()) img_b->to_cuda();
+            if (!msk_b->is_cuda()) msk_b->to_cuda();
+        }
+
+        TensorPtr logits_b = model_->forward(img_b);
+        float bce_sub = 0.0f;
+        float dice_sub = 0.0f;
+        TensorPtr loss_b = loss_fn_.forward(logits_b, msk_b, bce_sub, dice_sub);
+
+        StepMetrics sub_m = compute_metrics(logits_b, msk_b, loss_b->item(), bce_sub, dice_sub);
+        total_loss += sub_m.loss;
+        total_bce += sub_m.bce_loss;
+        total_dice += sub_m.dice_loss;
+        total_iou += sub_m.iou_score;
+        total_dice_score += sub_m.dice_score;
+    }
+
+    StepMetrics m;
+    m.loss = static_cast<float>(total_loss / static_cast<double>(B));
+    m.bce_loss = static_cast<float>(total_bce / static_cast<double>(B));
+    m.dice_loss = static_cast<float>(total_dice / static_cast<double>(B));
+    m.iou_score = static_cast<float>(total_iou / static_cast<double>(B));
+    m.dice_score = static_cast<float>(total_dice_score / static_cast<double>(B));
+    m.lr = optimizer_.get_lr();
+    return m;
 }
 
 } // namespace soar::engine

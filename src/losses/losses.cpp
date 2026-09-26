@@ -79,7 +79,9 @@ BCEWithLogitsLoss::BCEWithLogitsLoss(float weight, float pos_weight)
 
 TensorPtr BCEWithLogitsLoss::forward(const TensorPtr& logits, const TensorPtr& targets) {
     if (logits->shape() != targets->shape()) {
-        throw ShapeError("BCEWithLogitsLoss: shape mismatch between logits and targets");
+        if (logits->numel() != targets->numel()) {
+            throw ShapeError("BCEWithLogitsLoss: shape mismatch between logits and targets");
+        }
     }
     if (logits->is_cuda()) logits->sync_to_host();
     if (targets->is_cuda()) targets->sync_to_host();
@@ -174,7 +176,9 @@ DiceLoss::DiceLoss(float weight, float smooth)
 
 TensorPtr DiceLoss::forward(const TensorPtr& logits, const TensorPtr& targets) {
     if (logits->shape() != targets->shape()) {
-        throw ShapeError("DiceLoss: shape mismatch between logits and targets");
+        if (logits->numel() != targets->numel()) {
+            throw ShapeError("DiceLoss: shape mismatch between logits and targets");
+        }
     }
     if (logits->is_cuda()) logits->sync_to_host();
     if (targets->is_cuda()) targets->sync_to_host();

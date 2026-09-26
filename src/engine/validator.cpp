@@ -18,10 +18,18 @@ ValidationMetrics Validator::validate_sample(const TensorPtr& image, const Tenso
     NoGradGuard guard;
     model_->eval();
 
+    if (model_->is_cuda()) {
+        if (!image->is_cuda()) image->to_cuda();
+        if (!mask->is_cuda()) mask->to_cuda();
+    }
+
     TensorPtr logits = model_->forward(image);
     float bce_l = 0.0f;
     float dice_l = 0.0f;
     TensorPtr loss = loss_fn_.forward(logits, mask, bce_l, dice_l);
+
+    if (logits->is_cuda()) logits->sync_to_host();
+    if (mask->is_cuda()) mask->sync_to_host();
 
     const float* z = logits->data();
     const float* y = mask->data();
@@ -95,6 +103,10 @@ ValidationMetrics Validator::validate(const DatasetType& dataset,
 
     for (size_t idx : indices) {
         auto sample = dataset.get_sample(idx);
+        if (model_->is_cuda()) {
+            if (!sample.image->is_cuda()) sample.image->to_cuda();
+            if (!sample.mask->is_cuda()) sample.mask->to_cuda();
+        }
         TensorPtr logits = model_->forward(sample.image);
 
         float bce_l = 0.0f;
@@ -104,6 +116,9 @@ ValidationMetrics Validator::validate(const DatasetType& dataset,
         total_loss += loss->item();
         total_bce += bce_l;
         total_dice_loss += dice_l;
+
+        if (logits->is_cuda()) logits->sync_to_host();
+        if (sample.mask->is_cuda()) sample.mask->sync_to_host();
 
         const float* z = logits->data();
         const float* y = sample.mask->data();

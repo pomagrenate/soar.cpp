@@ -110,9 +110,9 @@ cudaError_t cudaHostAlloc(void** pHost, size_t size, unsigned int flags) noexcep
 cudaError_t cudaFreeHost(void* pHost) noexcept;
 
 cudaError_t cudaMemcpy(void* dst, const void* src, size_t count, cudaMemcpyKind kind) noexcept;
-cudaError_t cudaMemcpyAsync(void* dst, const void* src, size_t count, cudaMemcpyKind kind, cudaStream_t stream) noexcept;
+cudaError_t cudaMemcpyAsync(void* dst, const void* src, size_t count, cudaMemcpyKind kind, cudaStream_t stream = nullptr) noexcept;
 cudaError_t cudaMemset(void* devPtr, int value, size_t count) noexcept;
-cudaError_t cudaMemsetAsync(void* devPtr, int value, size_t count, cudaStream_t stream) noexcept;
+cudaError_t cudaMemsetAsync(void* devPtr, int value, size_t count, cudaStream_t stream = nullptr) noexcept;
 
 struct cudaDeviceProp {
     char name[256]{0};

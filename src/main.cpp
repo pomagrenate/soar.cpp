@@ -689,7 +689,7 @@ int main(int argc, char* argv[]) {
                   << "  Epochs:                  " << epochs << "\n"
                   << "  Learning Rate:           " << learning_rate << "\n"
                   << "  Weight Decay:            " << weight_decay << "\n"
-                  << "  Physical Batch Size:     1 (Strict Native Resolution)\n"
+                  << "  Physical Batch Size:     " << batch_size << "\n"
                   << "  Image Resolution:        " << img_h << "x" << img_w << "\n"
                   << "  Accumulate Grad Batches: " << accumulate_grad_batches << "\n"
                   << "  Validation Split:        " << val_split << "\n"
