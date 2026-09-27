@@ -5,6 +5,9 @@
 #include <new>
 #include <type_traits>
 #include <vector>
+#include <string>
+#include <cstdio>
+#include <atomic>
 #include "palloc.h"
 
 namespace soar::memory {
@@ -63,9 +66,13 @@ template <typename T>
 using PallocVector = std::vector<T, PallocAllocator<T>>;
 
 /**
- * @brief Memory statistics queried directly from palloc runtime.
+ * @brief Enhanced memory statistics for allocation tracking.
+ * 
+ * Inspired by PyTorch's DeviceStats, this provides detailed insights into
+ * memory usage patterns essential for 2048×2048 high-resolution workloads.
  */
 struct PallocStats {
+    // Process-level statistics from palloc
     size_t elapsed_msecs{0};
     size_t user_msecs{0};
     size_t system_msecs{0};
@@ -74,8 +81,16 @@ struct PallocStats {
     size_t current_commit{0};
     size_t peak_commit{0};
     size_t page_faults{0};
+    
+    // SOAR-specific allocation tracking (simplified)
+    size_t total_allocations{0};
+    size_t total_deallocations{0};
+    size_t allocation_failures{0};
 };
 
+/**
+ * @brief Get comprehensive memory statistics from palloc runtime.
+ */
 inline PallocStats get_palloc_process_info() noexcept {
     PallocStats stats;
     ::pa_process_info(&stats.elapsed_msecs, &stats.user_msecs, &stats.system_msecs,
@@ -84,8 +99,41 @@ inline PallocStats get_palloc_process_info() noexcept {
     return stats;
 }
 
+/**
+ * @brief Print detailed palloc statistics to stdout.
+ */
 inline void print_palloc_stats() noexcept {
     ::pa_stats_print(nullptr);
+}
+
+/**
+ * @brief Check if memory usage is approaching high-resolution workload limits.
+ * 
+ * @param stats Current memory statistics
+ * @param warning_threshold_mb Warning threshold in MB (default: 2048MB for 2048×2048 workloads)
+ * @return true if memory usage is concerning
+ */
+inline bool is_memory_usage_high(const PallocStats& stats, size_t warning_threshold_mb = 2048) noexcept {
+    size_t current_mb = stats.current_rss / (1024 * 1024);
+    return current_mb >= warning_threshold_mb;
+}
+
+/**
+ * @brief Get formatted memory usage string for logging.
+ */
+inline std::string format_memory_stats(const PallocStats& stats) noexcept {
+    char buffer[512];
+    snprintf(buffer, sizeof(buffer),
+             "Memory: RSS=%zuMB (peak=%zuMB), Commit=%zuMB (peak=%zuMB), "
+             "Allocs=%zu, Deallocs=%zu, Failures=%zu",
+             stats.current_rss / (1024 * 1024),
+             stats.peak_rss / (1024 * 1024),
+             stats.current_commit / (1024 * 1024),
+             stats.peak_commit / (1024 * 1024),
+             stats.total_allocations,
+             stats.total_deallocations,
+             stats.allocation_failures);
+    return std::string(buffer);
 }
 
 } // namespace soar::memory

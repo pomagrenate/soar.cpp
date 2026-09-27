@@ -118,7 +118,9 @@ set(SOAR_SOURCES
     src/vulkan/buffer.cpp
     src/vulkan/pipeline.cpp
     src/vulkan/command_queue.cpp
+    src/vulkan/caching_allocator.cpp
     src/tensor/tensor.cpp
+    src/tensor/tensor_iterator.cpp
     src/nn/layers.cpp
     src/nn/blocks.cpp
     src/nn/soar_model.cpp

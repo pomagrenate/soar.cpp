@@ -44,6 +44,8 @@ using PFN_cuCtxSetCurrent = CUresult (*)(CUcontext ctx);
 using PFN_cuCtxSynchronize = CUresult (*)(void);
 using PFN_cuMemAlloc = CUresult (*)(CUdeviceptr *dptr, size_t bytesize);
 using PFN_cuMemFree = CUresult (*)(CUdeviceptr dptr);
+using PFN_cuMemAllocAsync = CUresult (*)(CUdeviceptr *dptr, size_t bytesize, CUstream_drv hStream);
+using PFN_cuMemFreeAsync = CUresult (*)(CUdeviceptr dptr, CUstream_drv hStream);
 using PFN_cuMemAllocHost = CUresult (*)(void **pp, size_t bytesize);
 using PFN_cuMemFreeHost = CUresult (*)(void *p);
 using PFN_cuMemcpyHtoD = CUresult (*)(CUdeviceptr dstDevice, const void *srcHost, size_t ByteCount);
@@ -78,6 +80,8 @@ PFN_cuCtxSetCurrent pfn_cuCtxSetCurrent = nullptr;
 PFN_cuCtxSynchronize pfn_cuCtxSynchronize = nullptr;
 PFN_cuMemAlloc pfn_cuMemAlloc = nullptr;
 PFN_cuMemFree pfn_cuMemFree = nullptr;
+PFN_cuMemAllocAsync pfn_cuMemAllocAsync = nullptr;
+PFN_cuMemFreeAsync pfn_cuMemFreeAsync = nullptr;
 PFN_cuMemAllocHost pfn_cuMemAllocHost = nullptr;
 PFN_cuMemFreeHost pfn_cuMemFreeHost = nullptr;
 PFN_cuMemcpyHtoD pfn_cuMemcpyHtoD = nullptr;
@@ -419,6 +423,19 @@ cudaError_t cudaFree(void* devPtr) noexcept {
         return cudaSuccess;
     }
     return cudaErrorInvalidDevice;
+}
+
+cudaError_t cudaMallocAsync(void** devPtr, size_t size, cudaStream_t /*stream*/) noexcept {
+    // Stub implementation - CUDA 11.2+ feature
+    // For now, fall back to regular cudaMalloc
+    // In the future, when CUDA 11.2+ is available, this would use cuMemAlloc
+    return cudaMalloc(devPtr, size);
+}
+
+cudaError_t cudaFreeAsync(void* devPtr, cudaStream_t /*stream*/) noexcept {
+    // Stub implementation - CUDA 11.2+ feature
+    // For now, fall back to regular cudaFree
+    return cudaFree(devPtr);
 }
 
 cudaError_t cudaHostAlloc(void** pHost, size_t size, unsigned int /*flags*/) noexcept {

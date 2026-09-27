@@ -43,7 +43,7 @@ void test_dag_dependency_counting() {
     auto add2 = std::make_shared<AddNode>(acc_b, acc_c);
     auto root = std::make_shared<AddNode>(add1, add2);
 
-    Engine engine;
+    Engine& engine = Engine::get_default_engine();
     std::unordered_map<AutogradNode*, size_t> dependencies;
     std::unordered_map<AutogradNode*, std::vector<std::shared_ptr<AutogradNode>>> graph_edges;
 
@@ -74,7 +74,7 @@ void test_topological_execution_and_gradient_accumulation() {
     root_grad->data()[0] = 1.0f;
     root_grad->data()[1] = 1.0f;
 
-    Engine engine;
+    Engine& engine = Engine::get_default_engine();
 
     // Step 1: Backward pass 1
     engine.execute(root, root_grad);

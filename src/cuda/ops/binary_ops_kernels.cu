@@ -41,11 +41,48 @@ __global__ void k_add_forward(const int64_t n, const float* __restrict__ a, cons
     }
 }
 
+/**
+ * @brief Vectorized add forward kernel (float4).
+ */
+__global__ void k_add_forward_vec4(const int64_t n, const float* __restrict__ a, 
+                                   const float* __restrict__ b, float* __restrict__ y) {
+    int64_t tid = (int64_t)blockIdx.x * blockDim.x + threadIdx.x;
+    int64_t stride = (int64_t)blockDim.x * gridDim.x;
+    
+    const int64_t n_vec = n / 4;
+    const auto* a_vec = reinterpret_cast<const VecLoad<float,4>*>(a);
+    const auto* b_vec = reinterpret_cast<const VecLoad<float,4>*>(b);
+    auto* y_vec = reinterpret_cast<VecLoad<float,4>*>(y);
+    
+    for (int64_t i = tid; i < n_vec; i += stride) {
+        VecLoad<float,4> av = a_vec[i];
+        VecLoad<float,4> bv = b_vec[i];
+        #pragma unroll
+        for (int k = 0; k < 4; k++) {
+            av.val[k] += bv.val[k];
+        }
+        y_vec[i] = av;
+    }
+    
+    for (int64_t i = n_vec * 4 + tid; i < n; i += stride) {
+        y[i] = a[i] + b[i];
+    }
+}
+
 void add_forward(const float* a, const float* b, float* y, size_t n, void* stream) {
     if (n == 0 || !a || !b || !y) return;
+    
     int blocks = GET_BLOCKS(static_cast<int64_t>(n));
-    k_add_forward<<<blocks, CUDA_NUM_THREADS, 0, static_cast<cudaStream_t>(stream)>>>(
-        static_cast<int64_t>(n), a, b, y);
+    
+    if (n >= 1024 && is_vec_aligned<float,4>(a) && is_vec_aligned<float,4>(b) && is_vec_aligned<float,4>(y)) {
+        k_add_forward_vec4<<<blocks, CUDA_NUM_THREADS, 0, static_cast<cudaStream_t>(stream)>>>(
+            static_cast<int64_t>(n), a, b, y);
+    } else {
+        k_add_forward<<<blocks, CUDA_NUM_THREADS, 0, static_cast<cudaStream_t>(stream)>>>(
+            static_cast<int64_t>(n), a, b, y);
+    }
+    
+    SOAR_CUDA_KERNEL_LAUNCH_CHECK_DEBUG();
 }
 
 __global__ void k_add_backward(const int64_t n, const float* __restrict__ grad_y,

@@ -5,10 +5,11 @@
 namespace soar::cuda::kernels {
 
 /**
- * @brief GroupNorm moments kernel mirroring PyTorch RowwiseMomentsCUDAKernel.
+ * @brief GroupNorm moments kernel using Welford online algorithm for numerical stability.
  * Computes mean and rstd (1.0 / sqrt(var + eps)) per group using shared memory and warp reduction.
+ * Welford algorithm prevents catastrophic cancellation in variance computation.
  */
-__global__ void k_group_norm_moments(
+__global__ void k_group_norm_moments_welford(
     const float* __restrict__ in,
     float* __restrict__ mean,
     float* __restrict__ rstd,
@@ -22,46 +23,41 @@ __global__ void k_group_norm_moments(
     int64_t channels_per_group = C / num_groups;
     int64_t M = channels_per_group * HW; // Total elements in this group
 
-    __shared__ float s_sum[32];
-    __shared__ float s_sq_sum[32];
-
-    float thread_sum = 0.0f;
-    float thread_sq_sum = 0.0f;
+    WelfordData acc;
 
     for (int64_t idx = threadIdx.x; idx < M; idx += blockDim.x) {
         int64_t c_offset = idx / HW;
         int64_t hw = idx % HW;
         int64_t c = g * channels_per_group + c_offset;
         float val = in[c * HW + hw];
-        thread_sum += val;
-        thread_sq_sum += val * val;
+        acc.update(val);
     }
 
-    // Warp reduce
-    thread_sum = warp_reduce_sum(thread_sum);
-    thread_sq_sum = warp_reduce_sum(thread_sq_sum);
+    // Warp-level Welford reduction
+    acc = warp_reduce_welford(acc);
 
     int lane = threadIdx.x % 32;
     int wid = threadIdx.x / 32;
 
+    // Shared memory for inter-warp reduction
+    alignas(WelfordData) __shared__ char shared_bytes[sizeof(WelfordData) * 32];
+    WelfordData* shared = reinterpret_cast<WelfordData*>(shared_bytes);
+
     if (lane == 0) {
-        s_sum[wid] = thread_sum;
-        s_sq_sum[wid] = thread_sq_sum;
+        shared[wid] = acc;
     }
     __syncthreads();
 
     // Block reduce across warps
     if (wid == 0) {
-        float sum = (lane < blockDim.x / 32) ? s_sum[lane] : 0.0f;
-        float sq_sum = (lane < blockDim.x / 32) ? s_sq_sum[lane] : 0.0f;
-        sum = warp_reduce_sum(sum);
-        sq_sum = warp_reduce_sum(sq_sum);
+        int num_warps = (blockDim.x + 31) / 32;
+        WelfordData block_acc = (lane < num_warps) ? shared[lane] : WelfordData{};
+        block_acc = warp_reduce_welford(block_acc);
 
         if (lane == 0) {
-            float m = sum / static_cast<float>(M);
-            float var = (sq_sum / static_cast<float>(M)) - (m * m);
+            mean[g] = block_acc.mean;
+            float var = block_acc.variance();
             if (var < 0.0f) var = 0.0f;
-            mean[g] = m;
             rstd[g] = 1.0f / sqrtf(var + eps);
         }
     }
@@ -100,9 +96,10 @@ void group_norm_forward(const float* in, const float* gamma, const float* beta, 
     if (C == 0 || HW == 0 || !in || !out) return;
     cudaStream_t s = static_cast<cudaStream_t>(stream);
     
-    // Launch moments kernel: 1 block of 256 threads per group
-    k_group_norm_moments<<<static_cast<unsigned int>(num_groups), 256, 0, s>>>(
+    // Launch Welford moments kernel: 1 block of 256 threads per group
+    k_group_norm_moments_welford<<<static_cast<unsigned int>(num_groups), 256, 0, s>>>(
         in, saved_mean, saved_rstd, num_groups, C, HW, eps);
+    SOAR_CUDA_KERNEL_LAUNCH_CHECK_DEBUG();
 
     // Launch elementwise normalization
     int64_t total = static_cast<int64_t>(C * HW);
@@ -110,6 +107,7 @@ void group_norm_forward(const float* in, const float* gamma, const float* beta, 
     int64_t cpg = static_cast<int64_t>(C / num_groups);
     k_group_norm_forward<<<blocks, CUDA_NUM_THREADS, 0, s>>>(
         in, gamma, beta, saved_mean, saved_rstd, out, total, cpg, static_cast<int64_t>(HW));
+    SOAR_CUDA_KERNEL_LAUNCH_CHECK_DEBUG();
 }
 
 /**
@@ -263,6 +261,7 @@ void group_norm_backward(const float* grad_out, const float* in, const float* ga
     if (grad_gamma || grad_beta) {
         k_group_norm_backward_params<<<static_cast<unsigned int>(C), 256, 0, s>>>(
             grad_out, in, saved_mean, saved_rstd, grad_gamma, grad_beta, static_cast<int64_t>(C), cpg, static_cast<int64_t>(HW));
+        SOAR_CUDA_KERNEL_LAUNCH_CHECK_DEBUG();
     }
 
     // 2. Compute input gradients if needed
@@ -276,11 +275,13 @@ void group_norm_backward(const float* grad_out, const float* in, const float* ga
         k_group_norm_backward_moments<<<static_cast<unsigned int>(num_groups), 256, 0, s>>>(
             grad_out, in, gamma, saved_mean, sum_dy_gamma, sum_dy_gamma_diff,
             num_groups, C, HW);
+        SOAR_CUDA_KERNEL_LAUNCH_CHECK_DEBUG();
 
         int blocks = GET_BLOCKS(total);
         k_group_norm_backward_input<<<blocks, CUDA_NUM_THREADS, 0, s>>>(
             grad_out, in, gamma, saved_mean, saved_rstd, sum_dy_gamma, sum_dy_gamma_diff,
             grad_in, total, cpg, static_cast<int64_t>(HW));
+        SOAR_CUDA_KERNEL_LAUNCH_CHECK_DEBUG();
 
         cudaFreeAsync(sum_dy_gamma, s);
         cudaFreeAsync(sum_dy_gamma_diff, s);

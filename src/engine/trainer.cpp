@@ -1,11 +1,35 @@
 #include <soar/engine/trainer.hpp>
 #include <soar/cuda/cuda_runtime.hpp>
+#include <soar/cuda/cuda_kernels.hpp>
+#include <soar/cuda/cuda_stream.hpp>
 #include <cmath>
 #include <cstring>
 #include <algorithm>
 #include <iostream>
 
 namespace soar::engine {
+
+// ============================================================
+//  AsyncStagingBuffer implementation
+// ============================================================
+
+AsyncStagingBuffer::AsyncStagingBuffer(size_t buffer_size_bytes)
+    : size_(buffer_size_bytes) {
+    if (size_ == 0) return;
+    
+    // Use pinned host memory allocator for async transfers
+    host_ptr_ = soar::cuda::PinnedHostAllocator::instance().allocate(size_);
+}
+
+AsyncStagingBuffer::~AsyncStagingBuffer() {
+    if (host_ptr_) {
+        soar::cuda::PinnedHostAllocator::instance().deallocate(host_ptr_);
+    }
+}
+
+// ============================================================
+//  Trainer implementation
+// ============================================================
 
 Trainer::Trainer(std::shared_ptr<nn::SOARModel> model,
                  losses::CompositeLoss loss_fn,
@@ -16,7 +40,56 @@ Trainer::Trainer(std::shared_ptr<nn::SOARModel> model,
     : model_(std::move(model)), loss_fn_(loss_fn),
       optimizer_(std::move(optimizer)), scheduler_(std::move(scheduler)),
       accumulate_grad_batches_(std::max(size_t(1), accumulate_grad_batches)),
-      grad_clip_(grad_clip) {}
+      grad_clip_(grad_clip),
+      staging_buffer_index_(0) {
+    
+    // Pre-allocate staging buffers for double-buffering (if CUDA available)
+    if (soar::cuda::kernels::is_cuda_available()) {
+        size_t max_batch_size = 4 * 2048 * 2048 * sizeof(float); // Max: 4 images @ 2048x2048
+        staging_buffers_.push_back(std::make_shared<AsyncStagingBuffer>(max_batch_size));
+        staging_buffers_.push_back(std::make_shared<AsyncStagingBuffer>(max_batch_size));
+    }
+}
+
+void Trainer::async_transfer_to_device(const TensorPtr& src, TensorPtr& dst, 
+                                       const std::shared_ptr<AsyncStagingBuffer>& staging) {
+    if (!staging || !staging->host_ptr()) {
+        // Fallback to direct transfer if no staging buffer
+        if (src->is_cuda() && dst->is_cuda()) {
+            soar::cuda::cudaMemcpyAsync(dst->cuda_data(), src->cuda_data(), 
+                                        src->bytes(), soar::cuda::cudaMemcpyDeviceToDevice);
+        } else if (!src->is_cuda() && dst->is_cuda()) {
+            dst->to_cuda();
+        } else if (src->is_cuda() && !dst->is_cuda()) {
+            dst->to_host();
+        } else {
+            std::memcpy(dst->data(), src->data(), src->bytes());
+        }
+        return;
+    }
+    
+    // Async path: CPU -> Pinned Staging -> Device
+    if (!src->is_cuda() && dst->is_cuda()) {
+        // CPU copy to pinned staging (synchronous but fast)
+        std::memcpy(staging->host_ptr(), src->data(), src->bytes());
+        
+        // Async DMA transfer from staging to device
+        soar::cuda::cudaMemcpyAsync(dst->cuda_data(), staging->host_ptr(),
+                                    src->bytes(), soar::cuda::cudaMemcpyHostToDevice);
+    } else {
+        // Fallback for other cases
+        if (src->is_cuda() && dst->is_cuda()) {
+            soar::cuda::cudaMemcpyAsync(dst->cuda_data(), src->cuda_data(),
+                                        src->bytes(), soar::cuda::cudaMemcpyDeviceToDevice);
+        } else if (!src->is_cuda() && !dst->is_cuda()) {
+            std::memcpy(dst->data(), src->data(), src->bytes());
+        } else if (src->is_cuda() && !dst->is_cuda()) {
+            dst->to_host();
+        } else if (!src->is_cuda() && dst->is_cuda()) {
+            dst->to_cuda();
+        }
+    }
+}
 
 StepMetrics Trainer::compute_metrics(const TensorPtr& logits, const TensorPtr& masks, float loss_val, float bce_l, float dice_l) {
     StepMetrics m;
@@ -64,24 +137,39 @@ StepMetrics Trainer::train_step(const TensorPtr& images, const TensorPtr& masks,
     size_t H = (images->ndim() == 4) ? images->dim(2) : images->dim(1);
     size_t W = (images->ndim() == 4) ? images->dim(3) : images->dim(2);
 
+    // Get staging buffer for async transfers (double-buffering)
+    std::shared_ptr<AsyncStagingBuffer> staging = nullptr;
+    if (async_pipeline_enabled_ && !staging_buffers_.empty()) {
+        staging = staging_buffers_[staging_buffer_index_ % staging_buffers_.size()];
+        staging_buffer_index_++;
+    }
+
     if (B <= 1) {
         TensorPtr img = images;
         TensorPtr msk = masks;
         if (images->ndim() == 4) {
             img = Tensor::create({static_cast<int64_t>(C), static_cast<int64_t>(H), static_cast<int64_t>(W)}, false, images->is_cuda());
-            if (images->is_cuda()) {
-                soar::cuda::cudaMemcpyAsync(img->cuda_data(), images->cuda_data(), C * H * W * sizeof(float), soar::cuda::cudaMemcpyDeviceToDevice);
+            if (async_pipeline_enabled_ && staging) {
+                async_transfer_to_device(images, img, staging);
             } else {
-                std::memcpy(img->data(), images->data(), C * H * W * sizeof(float));
+                if (images->is_cuda()) {
+                    soar::cuda::cudaMemcpyAsync(img->cuda_data(), images->cuda_data(), C * H * W * sizeof(float), soar::cuda::cudaMemcpyDeviceToDevice);
+                } else {
+                    std::memcpy(img->data(), images->data(), C * H * W * sizeof(float));
+                }
             }
         }
         if (masks->ndim() == 4) {
             size_t mc = masks->dim(1);
             msk = Tensor::create({static_cast<int64_t>(mc), static_cast<int64_t>(H), static_cast<int64_t>(W)}, false, masks->is_cuda());
-            if (masks->is_cuda()) {
-                soar::cuda::cudaMemcpyAsync(msk->cuda_data(), masks->cuda_data(), mc * H * W * sizeof(float), soar::cuda::cudaMemcpyDeviceToDevice);
+            if (async_pipeline_enabled_ && staging) {
+                async_transfer_to_device(masks, msk, staging);
             } else {
-                std::memcpy(msk->data(), masks->data(), mc * H * W * sizeof(float));
+                if (masks->is_cuda()) {
+                    soar::cuda::cudaMemcpyAsync(msk->cuda_data(), masks->cuda_data(), mc * H * W * sizeof(float), soar::cuda::cudaMemcpyDeviceToDevice);
+                } else {
+                    std::memcpy(msk->data(), masks->data(), mc * H * W * sizeof(float));
+                }
             }
         }
 
@@ -127,17 +215,40 @@ StepMetrics Trainer::train_step(const TensorPtr& images, const TensorPtr& masks,
 
     for (size_t b = 0; b < B; ++b) {
         TensorPtr img_b = Tensor::create({static_cast<int64_t>(C), static_cast<int64_t>(H), static_cast<int64_t>(W)}, false, images->is_cuda());
-        if (images->is_cuda()) {
-            soar::cuda::cudaMemcpyAsync(img_b->cuda_data(), images->cuda_data() + b * img_sample_numel, img_sample_numel * sizeof(float), soar::cuda::cudaMemcpyDeviceToDevice);
+        if (async_pipeline_enabled_ && staging) {
+            // Offset into the batch for this sample
+            TensorPtr sample_slice = Tensor::create(img_b->shape(), false, images->is_cuda());
+            if (images->is_cuda()) {
+                soar::cuda::cudaMemcpyAsync(sample_slice->cuda_data(), images->cuda_data() + b * img_sample_numel, 
+                                            img_sample_numel * sizeof(float), soar::cuda::cudaMemcpyDeviceToDevice);
+            } else {
+                std::memcpy(sample_slice->data(), images->data() + b * img_sample_numel, img_sample_numel * sizeof(float));
+            }
+            async_transfer_to_device(sample_slice, img_b, staging);
         } else {
-            std::memcpy(img_b->data(), images->data() + b * img_sample_numel, img_sample_numel * sizeof(float));
+            if (images->is_cuda()) {
+                soar::cuda::cudaMemcpyAsync(img_b->cuda_data(), images->cuda_data() + b * img_sample_numel, img_sample_numel * sizeof(float), soar::cuda::cudaMemcpyDeviceToDevice);
+            } else {
+                std::memcpy(img_b->data(), images->data() + b * img_sample_numel, img_sample_numel * sizeof(float));
+            }
         }
 
         TensorPtr msk_b = Tensor::create({static_cast<int64_t>(msk_c), static_cast<int64_t>(H), static_cast<int64_t>(W)}, false, masks->is_cuda());
-        if (masks->is_cuda()) {
-            soar::cuda::cudaMemcpyAsync(msk_b->cuda_data(), masks->cuda_data() + b * msk_sample_numel, msk_sample_numel * sizeof(float), soar::cuda::cudaMemcpyDeviceToDevice);
+        if (async_pipeline_enabled_ && staging) {
+            TensorPtr sample_slice = Tensor::create(msk_b->shape(), false, masks->is_cuda());
+            if (masks->is_cuda()) {
+                soar::cuda::cudaMemcpyAsync(sample_slice->cuda_data(), masks->cuda_data() + b * msk_sample_numel,
+                                            msk_sample_numel * sizeof(float), soar::cuda::cudaMemcpyDeviceToDevice);
+            } else {
+                std::memcpy(sample_slice->data(), masks->data() + b * msk_sample_numel, msk_sample_numel * sizeof(float));
+            }
+            async_transfer_to_device(sample_slice, msk_b, staging);
         } else {
-            std::memcpy(msk_b->data(), masks->data() + b * msk_sample_numel, msk_sample_numel * sizeof(float));
+            if (masks->is_cuda()) {
+                soar::cuda::cudaMemcpyAsync(msk_b->cuda_data(), masks->cuda_data() + b * msk_sample_numel, msk_sample_numel * sizeof(float), soar::cuda::cudaMemcpyDeviceToDevice);
+            } else {
+                std::memcpy(msk_b->data(), masks->data() + b * msk_sample_numel, msk_sample_numel * sizeof(float));
+            }
         }
 
         if (model_->is_cuda()) {

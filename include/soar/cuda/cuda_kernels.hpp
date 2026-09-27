@@ -109,5 +109,22 @@ void adamw_step(float* theta, const float* g, float* m, float* v,
                 float lr, float beta1, float beta2, float eps, float wd,
                 float step_size, float sqrt_bc2, size_t n, void* stream = nullptr);
 
+// Multi-tensor fused AdamW (processes all parameters in single kernel launch)
+void adamw_step_multi_tensor(
+    float** params,
+    const float** grads,
+    float** m,
+    float** v,
+    const int64_t* numel,
+    int n_tensors,
+    float lr,
+    float beta1,
+    float beta2,
+    float eps,
+    float wd,
+    float step_size,
+    float sqrt_bc2,
+    void* stream = nullptr);
+
 } // namespace soar::cuda::kernels
 

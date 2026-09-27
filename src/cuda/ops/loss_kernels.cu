@@ -4,6 +4,24 @@
 
 namespace soar::cuda::kernels {
 
+// ============================================================
+//  Phase 3.3: CUB-accelerated reductions
+//  CUB provides device-level reductions that are faster than
+//  custom warp/block reductions for large tensors.
+//  For now, we use a stub that falls back to our existing reductions.
+//  To enable full CUB acceleration, add CUB to third_party/ and uncomment
+//  the CUB includes below.
+// ============================================================
+
+// #include <cub/cub.cuh>  // Uncomment when CUB is added to third_party/
+
+// CUB-accelerated reduction wrapper (currently using fallback)
+template <typename T>
+__inline__ __device__ T cub_reduce_sum(T val) {
+    // Fallback to existing block reduction until CUB is integrated
+    return block_reduce_sum(val);
+}
+
 // =============================================================================
 // BCE with Logits Forward & Backward
 // =============================================================================
@@ -23,7 +41,8 @@ __global__ void k_bce_with_logits_forward(
         float loss_i = (1.0f - y) * z + w * term;
         sum += loss_i;
     }
-    sum = block_reduce_sum(sum);
+    // Phase 3.3: Use CUB-accelerated reduction (fallback to block_reduce_sum for now)
+    sum = cub_reduce_sum(sum);
     if (threadIdx.x == 0) {
         atomicAdd(out_loss, sum);
     }
@@ -41,6 +60,7 @@ float bce_with_logits_forward(const float* logits, const float* targets,
     int blocks = GET_BLOCKS(static_cast<int64_t>(n), 256);
     k_bce_with_logits_forward<<<blocks, 256, 0, s>>>(
         logits, targets, d_loss, pos_weight, static_cast<int64_t>(n));
+    SOAR_CUDA_KERNEL_LAUNCH_CHECK_DEBUG();
 
     float h_loss = 0.0f;
     cudaMemcpyAsync(&h_loss, d_loss, sizeof(float), cudaMemcpyDeviceToHost, s);
@@ -81,6 +101,7 @@ void bce_with_logits_backward(const float* logits, const float* targets, float* 
     int blocks = GET_BLOCKS(static_cast<int64_t>(n));
     k_bce_with_logits_backward<<<blocks, CUDA_NUM_THREADS, 0, static_cast<cudaStream_t>(stream)>>>(
         logits, targets, grad_logits, grad_out, weight, pos_weight, static_cast<int64_t>(n));
+    SOAR_CUDA_KERNEL_LAUNCH_CHECK_DEBUG();
 }
 
 // =============================================================================
@@ -105,9 +126,10 @@ __global__ void k_dice_loss_forward(
         thread_sum_y += y;
     }
 
-    float b_inter = block_reduce_sum(thread_inter);
-    float b_sum_p = block_reduce_sum(thread_sum_p);
-    float b_sum_y = block_reduce_sum(thread_sum_y);
+    // Phase 3.3: Use CUB-accelerated reductions (fallback to block_reduce_sum for now)
+    float b_inter = cub_reduce_sum(thread_inter);
+    float b_sum_p = cub_reduce_sum(thread_sum_p);
+    float b_sum_y = cub_reduce_sum(thread_sum_y);
 
     if (threadIdx.x == 0) {
         atomicAdd(&out_accum[0], b_inter);
@@ -132,6 +154,7 @@ float dice_loss_forward(const float* logits, const float* targets,
     int blocks = GET_BLOCKS(static_cast<int64_t>(n), 256);
     k_dice_loss_forward<<<blocks, 256, 0, s>>>(
         logits, targets, d_accum, static_cast<int64_t>(n));
+    SOAR_CUDA_KERNEL_LAUNCH_CHECK_DEBUG();
 
     float h_accum[3] = {0.0f, 0.0f, 0.0f};
     cudaMemcpyAsync(h_accum, d_accum, 3 * sizeof(float), cudaMemcpyDeviceToHost, s);
@@ -179,6 +202,7 @@ void dice_loss_backward(const float* logits, const float* targets, float* grad_l
     int blocks = GET_BLOCKS(static_cast<int64_t>(n));
     k_dice_loss_backward<<<blocks, CUDA_NUM_THREADS, 0, s>>>(
         logits, targets, grad_logits, factor, denom, numer, static_cast<int64_t>(n));
+    SOAR_CUDA_KERNEL_LAUNCH_CHECK_DEBUG();
 }
 
 // =============================================================================
@@ -236,6 +260,7 @@ void dice_bce_loss_backward(const float* logits, const float* targets, float* gr
     k_dice_bce_loss_backward<<<blocks, CUDA_NUM_THREADS, 0, s>>>(
         logits, targets, grad_logits, grad_out, w, bw, dw, pos_weight, smooth,
         inter, sum_p, sum_y, static_cast<int64_t>(n));
+    SOAR_CUDA_KERNEL_LAUNCH_CHECK_DEBUG();
 }
 
 } // namespace soar::cuda::kernels

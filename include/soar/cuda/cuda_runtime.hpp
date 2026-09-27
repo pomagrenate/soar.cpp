@@ -106,6 +106,8 @@ cudaError_t cudaEventElapsedTime(float* ms, cudaEvent_t start, cudaEvent_t end) 
 
 cudaError_t cudaMalloc(void** devPtr, size_t size) noexcept;
 cudaError_t cudaFree(void* devPtr) noexcept;
+cudaError_t cudaMallocAsync(void** devPtr, size_t size, cudaStream_t stream) noexcept;
+cudaError_t cudaFreeAsync(void* devPtr, cudaStream_t stream) noexcept;
 cudaError_t cudaHostAlloc(void** pHost, size_t size, unsigned int flags) noexcept;
 cudaError_t cudaFreeHost(void* pHost) noexcept;
 

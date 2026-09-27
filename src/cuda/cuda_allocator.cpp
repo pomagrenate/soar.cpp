@@ -37,22 +37,16 @@ Block* CudaMemoryPool::find_free_block(size_t size, cudaStream_t stream, bool is
     Block search_key(nullptr, size, device_index_, stream, is_small);
     auto it = pool_set.lower_bound(&search_key);
 
+    // Strict stream matching: only reuse blocks on the same stream
+    // or the default stream (null). This prevents race conditions.
     while (it != pool_set.end()) {
         Block* candidate = *it;
-        if (candidate->stream == stream || candidate->stream == nullptr || stream == nullptr) {
+        if (candidate->stream == stream || 
+            (candidate->stream == nullptr && stream == nullptr)) {
             pool_set.erase(it);
             return candidate;
         }
         ++it;
-    }
-
-    // Secondary pass: accept any free block with sufficient size
-    it = pool_set.lower_bound(&search_key);
-    if (it != pool_set.end()) {
-        Block* candidate = *it;
-        pool_set.erase(it);
-        candidate->stream = stream;
-        return candidate;
     }
 
     return nullptr;
@@ -137,6 +131,14 @@ void CudaMemoryPool::coalesce_block(Block* block) {
     pool_set.insert(block);
 }
 
+void CudaMemoryPool::try_reclaim() {
+    // Process pending frees to reclaim memory from completed streams
+    process_pending_frees();
+    
+    // If still no free blocks, empty cache to release everything
+    empty_cache();
+}
+
 void* CudaMemoryPool::allocate(size_t size, cudaStream_t stream) {
     if (size == 0) return nullptr;
 
@@ -163,6 +165,47 @@ void* CudaMemoryPool::allocate(size_t size, cudaStream_t stream) {
     return block->ptr;
 }
 
+void CudaMemoryPool::record_pending_free(Block* block) {
+    // Record an event on the stream where the block was used
+    cudaEvent_t event = nullptr;
+    SOAR_CUDA_CHECK(cudaEventCreateWithFlags(&event, cudaEventDisableTiming));
+    SOAR_CUDA_CHECK(cudaEventRecord(event, block->stream));
+    
+    PendingFree pending;
+    pending.block = block;
+    pending.event = event;
+    
+    pending_frees_[block->stream].push_back(pending);
+}
+
+void CudaMemoryPool::process_pending_frees() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    
+    for (auto& [stream, frees] : pending_frees_) {
+        auto it = frees.begin();
+        while (it != frees.end()) {
+            if (cudaEventQuery(it->event) == cudaSuccess) {
+                // Event completed - return block to pool
+                cudaEventDestroy(it->event);
+                coalesce_block(it->block);
+                it = frees.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+    
+    // Clean up empty pending free lists
+    auto it = pending_frees_.begin();
+    while (it != pending_frees_.end()) {
+        if (it->second.empty()) {
+            it = pending_frees_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
 void CudaMemoryPool::deallocate(void* ptr) {
     if (!ptr) return;
 
@@ -181,11 +224,20 @@ void CudaMemoryPool::deallocate(void* ptr) {
     allocated_bytes_ -= block->size;
     active_blocks_count_--;
 
-    coalesce_block(block);
+    // For stream-aware reclamation, record pending free instead of immediate coalescing
+    if (block->stream != nullptr) {
+        record_pending_free(block);
+    } else {
+        // Default stream can be immediately coalesced
+        coalesce_block(block);
+    }
 }
 
 void CudaMemoryPool::empty_cache() {
     std::lock_guard<std::mutex> lock(mutex_);
+
+    // Process pending frees first to reclaim as much as possible
+    process_pending_frees();
 
     // Remove free contiguous segments
     std::vector<Block*> remaining_segments;
@@ -220,6 +272,51 @@ void CudaMemoryPool::empty_cache() {
         }
     }
     all_segments_ = std::move(remaining_segments);
+}
+
+// ============================================================
+//  PinnedHostAllocator implementation
+// ============================================================
+
+PinnedHostAllocator::~PinnedHostAllocator() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    
+    for (auto& [ptr, size] : blocks_) {
+        cudaFreeHost(ptr);
+    }
+    blocks_.clear();
+}
+
+PinnedHostAllocator& PinnedHostAllocator::instance() {
+    static PinnedHostAllocator s_instance;
+    return s_instance;
+}
+
+void* PinnedHostAllocator::allocate(size_t size) {
+    if (size == 0) return nullptr;
+    
+    void* ptr = nullptr;
+    SOAR_CUDA_CHECK(cudaHostAlloc(&ptr, size, cudaHostAllocDefault));
+    
+    std::lock_guard<std::mutex> lock(mutex_);
+    blocks_[ptr] = size;
+    
+    return ptr;
+}
+
+void PinnedHostAllocator::deallocate(void* ptr) {
+    if (!ptr) return;
+    
+    std::lock_guard<std::mutex> lock(mutex_);
+    
+    auto it = blocks_.find(ptr);
+    if (it != blocks_.end()) {
+        blocks_.erase(it);
+        cudaFreeHost(ptr);
+    } else {
+        // Unknown pointer - try to free anyway
+        cudaFreeHost(ptr);
+    }
 }
 
 } // namespace soar::cuda
