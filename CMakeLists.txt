@@ -18,15 +18,15 @@ endif()
 include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party
-    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/vulkan/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/vulkan-headers/include
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/stb
-    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/nlohmann
-    ${CMAKE_CURRENT_SOURCE_DIR}/palloc/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/palloc/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/nlohmann/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/palloc/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/palloc/src
 )
 
 # Automatically initialize git submodules if palloc is missing
-if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/palloc/src/static.c")
+if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/palloc/src/static.c")
     message(STATUS "palloc submodule not found. Initializing git submodules...")
     find_package(Git QUIET)
     if(GIT_FOUND)
@@ -43,13 +43,13 @@ endif()
 
 # Build palloc library
 set(PALLOC_SOURCES
-    ${CMAKE_CURRENT_SOURCE_DIR}/palloc/src/static.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/palloc/src/arena_pomai.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/palloc/src/static.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/palloc/src/arena_pomai.c
 )
 add_library(palloc_static STATIC ${PALLOC_SOURCES})
 target_include_directories(palloc_static PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/palloc/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/palloc/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/palloc/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/palloc/src
 )
 set_target_properties(palloc_static PROPERTIES POSITION_INDEPENDENT_CODE ON)
 if(NOT MSVC)
@@ -155,7 +155,7 @@ if(UNIX AND NOT APPLE)
 endif()
 target_include_directories(soar_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/vulkan/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/vulkan-headers/include
 )
 
 # Shared dynamic library for C-ABI / Python bindings
@@ -172,7 +172,7 @@ if(UNIX AND NOT APPLE)
 endif()
 target_include_directories(soar_engine_shared PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/vulkan/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/vulkan-headers/include
 )
 set_target_properties(soar_engine_shared PROPERTIES OUTPUT_NAME "soar_engine")
 

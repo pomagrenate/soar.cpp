@@ -1,3 +1,49 @@
-[submodule "palloc"]
-	path = palloc
+[submodule "third_party/palloc"]
+	path = third_party/palloc
 	url = https://github.com/pomagrenate/palloc.git
+[submodule "third_party/vulkan-headers"]
+	path = third_party/vulkan-headers
+	url = https://github.com/KhronosGroup/Vulkan-Headers.git
+	branch = main
+[submodule "third_party/cuda-samples"]
+	path = third_party/cuda-samples
+	url = https://github.com/NVIDIA/cuda-samples.git
+	branch = master
+[submodule "third_party/cutlass"]
+	path = third_party/cutlass
+	url = https://github.com/NVIDIA/cutlass.git
+	branch = main
+[submodule "third_party/nccl"]
+	path = third_party/nccl
+	url = https://github.com/NVIDIA/nccl.git
+	branch = master
+[submodule "third_party/fbgemm"]
+	path = third_party/fbgemm
+	url = https://github.com/pytorch/FBGEMM.git
+	branch = main
+[submodule "third_party/sleef"]
+	path = third_party/sleef
+	url = https://github.com/shibatch/sleef.git
+	branch = master
+[submodule "third_party/cpuinfo"]
+	path = third_party/cpuinfo
+	url = https://github.com/pytorch/cpuinfo.git
+	branch = main
+[submodule "third_party/googletest"]
+	path = third_party/googletest
+	url = https://github.com/google/googletest.git
+	branch = main
+[submodule "third_party/benchmark"]
+	path = third_party/benchmark
+	url = https://github.com/google/benchmark.git
+	branch = main
+[submodule "third_party/stb"]
+	path = third_party/stb
+	url = https://github.com/nothings/stb.git
+	branch = master
+[submodule "third_party/nlohmann"]
+	path = third_party/nlohmann
+	url = https://github.com/nlohmann/json.git
+[submodule "third_party/cudnn-frontend"]
+	path = third_party/cudnn-frontend
+	url = https://github.com/NVIDIA/cudnn-frontend.git
