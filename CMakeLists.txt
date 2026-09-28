@@ -233,3 +233,18 @@ add_executable(test_async_dataloader tests/test_async_dataloader.cpp)
 target_link_libraries(test_async_dataloader PRIVATE soar_core)
 add_test(NAME test_async_dataloader COMMAND test_async_dataloader)
 
+# Add a custom target to build all tests explicitly
+add_custom_target(build_tests
+    COMMAND ${CMAKE_COMMAND} --build . --target test_palloc_memory
+    COMMAND ${CMAKE_COMMAND} --build . --target test_vulkan_backend
+    COMMAND ${CMAKE_COMMAND} --build . --target test_operators
+    COMMAND ${CMAKE_COMMAND} --build . --target test_full_engine
+    COMMAND ${CMAKE_COMMAND} --build . --target test_data_pipeline
+    COMMAND ${CMAKE_COMMAND} --build . --target test_losses
+    COMMAND ${CMAKE_COMMAND} --build . --target test_metrics_preprocess
+    COMMAND ${CMAKE_COMMAND} --build . --target test_cuda_subsystem
+    COMMAND ${CMAKE_COMMAND} --build . --target test_autograd_engine
+    COMMAND ${CMAKE_COMMAND} --build . --target test_optimizers
+    COMMAND ${CMAKE_COMMAND} --build . --target test_async_dataloader
+)
+
