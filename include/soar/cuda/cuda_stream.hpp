@@ -60,4 +60,64 @@ private:
     int priority_{0};
 };
 
+// ============================================================
+//  Thread-local current stream per device
+//  (mirrors c10::cuda::getCurrentCUDAStream / setCurrentCUDAStream)
+// ============================================================
+
+inline constexpr int kMaxDevices = 8;
+
+/// Get the current CUDA stream for the given device (default: device 0).
+/// Returns the default (null) stream if none has been set.
+CudaStream getCurrentStream(int device_index = 0);
+
+/// Set the current CUDA stream for its associated device (thread-local).
+void setCurrentStream(CudaStream stream);
+
+// ============================================================
+//  RAII Device Guard — saves and restores the active CUDA device.
+//  Mirrors c10::cuda::CUDAGuard / CUDADeviceGuard.
+//  Non-copyable, non-movable.
+// ============================================================
+struct CudaDeviceGuard {
+    /// Immediately calls cudaSetDevice(device_index) and saves the original.
+    explicit CudaDeviceGuard(int device_index);
+    ~CudaDeviceGuard();
+
+    CudaDeviceGuard(const CudaDeviceGuard&) = delete;
+    CudaDeviceGuard& operator=(const CudaDeviceGuard&) = delete;
+    CudaDeviceGuard(CudaDeviceGuard&&) = delete;
+    CudaDeviceGuard& operator=(CudaDeviceGuard&&) = delete;
+
+private:
+    int original_device_{0};
+};
+
+// ============================================================
+//  RAII Stream Guard — sets the current stream for a scope,
+//  restores the previous current stream on exit.
+//  Also sets the active CUDA device to the stream's device.
+//  Mirrors c10::cuda::CUDAStreamGuard.
+//  Non-copyable, non-movable.
+// ============================================================
+struct CudaStreamGuard {
+    /// Set the current stream (and device) to `stream`.
+    explicit CudaStreamGuard(CudaStream stream);
+    ~CudaStreamGuard();
+
+    CudaStreamGuard(const CudaStreamGuard&) = delete;
+    CudaStreamGuard& operator=(const CudaStreamGuard&) = delete;
+    CudaStreamGuard(CudaStreamGuard&&) = delete;
+    CudaStreamGuard& operator=(CudaStreamGuard&&) = delete;
+
+    /// Returns the stream that was current before this guard was created.
+    [[nodiscard]] CudaStream original_stream() const noexcept { return original_stream_; }
+    /// Returns the stream that is currently active.
+    [[nodiscard]] CudaStream current_stream() const noexcept { return current_stream_; }
+
+private:
+    CudaStream original_stream_;
+    CudaStream current_stream_;
+};
+
 } // namespace soar::cuda

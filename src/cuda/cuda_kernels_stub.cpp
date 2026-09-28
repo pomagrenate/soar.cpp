@@ -186,6 +186,14 @@ void adamw_step(float* /*theta*/, const float* /*g*/, float* /*m*/, float* /*v*/
     throw DeviceError("CUDA kernel called but soar.cpp was compiled without CUDA compiler (nvcc).");
 }
 
+void adamw_step_multi_tensor(
+    float** /*params*/, const float** /*grads*/, float** /*m*/, float** /*v*/,
+    const int64_t* /*numel*/, int /*n_tensors*/,
+    float /*lr*/, float /*beta1*/, float /*beta2*/, float /*eps*/, float /*wd*/,
+    float /*step_size*/, float /*sqrt_bc2*/, void* /*stream*/) {
+    throw DeviceError("CUDA kernel called but soar.cpp was compiled without CUDA compiler (nvcc).");
+}
+
 #endif
 
 } // namespace soar::cuda::kernels

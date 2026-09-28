@@ -52,12 +52,16 @@ inline int GET_BLOCKS(const int64_t N, const int64_t max_threads_per_block = CUD
         }                                                                       \
     } while (0)
 
-// Debug-only kernel launch check (enable with -DSOAR_DEBUG)
-#ifdef SOAR_DEBUG
-#define SOAR_CUDA_KERNEL_LAUNCH_CHECK_DEBUG() SOAR_CUDA_KERNEL_LAUNCH_CHECK()
+// Debug-only kernel launch check (no-op in release builds).
+// Called after every kernel launch in .cu files to detect errors early.
+#ifdef NDEBUG
+#   define SOAR_CUDA_KERNEL_LAUNCH_CHECK_DEBUG() ((void)0)
 #else
-#define SOAR_CUDA_KERNEL_LAUNCH_CHECK_DEBUG()
+#   define SOAR_CUDA_KERNEL_LAUNCH_CHECK_DEBUG() SOAR_CUDA_KERNEL_LAUNCH_CHECK()
 #endif
+
+
+
 
 // ============================================================
 //  Warp/Block reductions
