@@ -741,11 +741,11 @@ int main(int argc, char* argv[]) {
             std::vector<size_t> train_indices(indices.begin(), indices.begin() + train_count);
             std::vector<size_t> val_indices(indices.begin() + train_count, indices.end());
 
-            size_t n_workers = std::thread::hardware_concurrency() > 0 ? std::min(size_t(8), (size_t)std::thread::hardware_concurrency()) : 4;
+            size_t n_workers = 1;  // Disabled async workers for stability (was using hardware_concurrency)
             soar::data::DataLoaderOptions loader_opts;
             loader_opts.batch_size = batch_size;
             loader_opts.workers = n_workers;
-            loader_opts.prefetch_factor = 4;
+            loader_opts.prefetch_factor = 2;  // Reduced prefetch for stability
             loader_opts.shuffle = true;
             loader_opts.pin_memory = true;
 
