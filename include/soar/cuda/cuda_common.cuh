@@ -112,7 +112,7 @@ struct alignas(N * sizeof(T)) VecLoad {
 
 // Check that pointer is naturally aligned for N-element vector loads
 template <typename T, int N>
-__device__ __forceinline__ bool is_vec_aligned(const T* p) {
+__host__ __device__ __forceinline__ bool is_vec_aligned(const T* p) {
     return (reinterpret_cast<uintptr_t>(p) % (N * sizeof(T))) == 0;
 }
 

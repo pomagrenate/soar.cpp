@@ -13,7 +13,7 @@ namespace soar::cuda::kernels {
 constexpr int kAdamILP = 4;  // Process 4 elements per thread (vectorized)
 constexpr int kAdamChunkSize = 65536;  // Chunk size for multi-tensor processing
 constexpr int kAdamBlockSize = 512;
-constexpr int kMaxTensorsPerLaunch = 64;  // Conservative limit to stay under 4KB argument limit
+constexpr int kMaxTensorsPerLaunch = 32;  // Reduced to stay under 4KB argument limit
 
 /**
  * @brief Metadata for multi-tensor AdamW kernel.
@@ -30,8 +30,8 @@ struct AdamTensorMeta {
     int n_tensors;
     
     // Maps block index to tensor index and chunk offset
-    uint8_t block_to_tensor[320];  // Max blocks = 320 (64 tensors * 5 chunks each)
-    int32_t block_to_chunk[320];
+    uint8_t block_to_tensor[160];  // Max blocks = 160 (32 tensors * 5 chunks each)
+    int32_t block_to_chunk[160];
 };
 
 /**
@@ -52,6 +52,7 @@ __global__ void k_adamw_multi_tensor(
     float sqrt_bc2) {
     
     // Determine which tensor and chunk this block processes
+    if (blockIdx.x >= 160) return;  // Safety check for reduced array size
     int tensor_idx = meta.block_to_tensor[blockIdx.x];
     int chunk_idx = meta.block_to_chunk[blockIdx.x];
     
@@ -224,7 +225,7 @@ void adamw_step_multi_tensor(
         int n_chunks = static_cast<int>((n + kAdamChunkSize - 1) / kAdamChunkSize);
         
         for (int c = 0; c < n_chunks; c++) {
-            if (block_idx < 320) {
+            if (block_idx < 160) {  // Match reduced array size
                 meta.block_to_tensor[block_idx] = static_cast<uint8_t>(i);
                 meta.block_to_chunk[block_idx] = c;
                 block_idx++;
