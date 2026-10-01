@@ -150,42 +150,14 @@ void Engine::compute_dependencies(
 
 void Engine::execute(std::shared_ptr<AutogradNode> root, const TensorPtr& root_grad) {
     if (!root) return;
-
-    // Check reentrant depth - if too deep, execute sequentially to avoid excessive locking
-    if (current_depth >= MAX_REENTRANT_DEPTH) {
-        execute_sequential(root, root_grad);
-        return;
-    }
-
-    // Create graph task for this execution
-    auto graph_task = std::make_shared<GraphTask>();
-    
-    std::lock_guard<std::mutex> lock(engine_mutex_);
-
-    std::unordered_map<AutogradNode*, size_t> dependencies;
-    std::unordered_map<AutogradNode*, std::vector<std::shared_ptr<AutogradNode>>> graph_edges;
-
-    compute_dependencies(root.get(), dependencies, graph_edges);
-    
-    // Store dependencies in graph task
-    graph_task->dependencies_ = dependencies;
-    graph_task->nodes_in_graph_.insert(root.get());
-    for (const auto& [node, deps] : dependencies) {
-        graph_task->nodes_in_graph_.insert(node);
-    }
-
-    root->add_grad_output(root_grad);
-    
-    // For now, use sequential execution as baseline
-    // Full thread pool integration would require more sophisticated coordination
-    execute_sequential(root, root_grad);
+    execute_sequential(std::move(root), root_grad);
 }
 
 void Engine::release_node_activations(std::shared_ptr<AutogradNode> node) {
     if (!eager_activation_release_) return;
     if (!node) return;
     
-    std::lock_guard<std::mutex> lock(engine_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(engine_mutex_);
     
     // Mark this node as released to prevent double-release
     if (released_nodes_.find(node.get()) != released_nodes_.end()) {
@@ -244,7 +216,7 @@ void Engine::execute_sequential(std::shared_ptr<AutogradNode> root, const Tensor
     
     // Clear released nodes set for next backward pass
     if (eager_activation_release_) {
-        std::lock_guard<std::mutex> lock(engine_mutex_);
+        std::lock_guard<std::recursive_mutex> lock(engine_mutex_);
         released_nodes_.clear();
     }
     

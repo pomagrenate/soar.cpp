@@ -81,6 +81,11 @@ static TensorPtr pad_spatial(const TensorPtr& input, size_t ph, size_t pw) {
     size_t H_pad = H + ph;
     size_t W_pad = W + pw;
 
+    bool was_cuda = input->is_cuda();
+    if (was_cuda) {
+        const_cast<Tensor*>(input.get())->sync_to_host();
+    }
+
     TensorPtr padded = Tensor::create({static_cast<int64_t>(C),
                                       static_cast<int64_t>(H_pad),
                                       static_cast<int64_t>(W_pad)},
@@ -115,6 +120,10 @@ static TensorPtr pad_spatial(const TensorPtr& input, size_t ph, size_t pw) {
         }
     }
 
+    if (was_cuda) {
+        padded->to_cuda();
+    }
+
     if (input->requires_grad()) {
         auto node = std::make_shared<AutoPadNode>();
         node->input = input;
@@ -128,6 +137,11 @@ static TensorPtr unpad_spatial(const TensorPtr& input, size_t orig_h, size_t ori
     size_t C = input->dim(0);
     size_t H_pad = input->dim(1);
     size_t W_pad = input->dim(2);
+
+    bool was_cuda = input->is_cuda();
+    if (was_cuda) {
+        const_cast<Tensor*>(input.get())->sync_to_host();
+    }
 
     TensorPtr sliced = Tensor::create({static_cast<int64_t>(C),
                                       static_cast<int64_t>(orig_h),
@@ -143,6 +157,10 @@ static TensorPtr unpad_spatial(const TensorPtr& input, size_t orig_h, size_t ori
                     in_data[c * (H_pad * W_pad) + y * W_pad + x];
             }
         }
+    }
+
+    if (was_cuda) {
+        sliced->to_cuda();
     }
 
     if (input->requires_grad()) {

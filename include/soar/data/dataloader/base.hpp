@@ -107,13 +107,18 @@ protected:
     virtual std::optional<BatchRequestType> get_batch_request() = 0;
 
     virtual void reset() {
-        shuttle_.drain();
+        if (options_.workers > 0) {
+            shuttle_.drain();
+        }
         sequence_number_ = 0;
         sequencer_ = new_sequencer();
-        prefetch();
+        if (options_.workers > 0) {
+            prefetch();
+        }
     }
 
     void prefetch(size_t requested_jobs) {
+        if (options_.workers == 0) return;
         for (size_t r = 0; r < requested_jobs; ++r) {
             if (auto batch_request = get_batch_request()) {
                 this->push_job(std::move(*batch_request));
@@ -124,6 +129,7 @@ protected:
     }
 
     void prefetch() {
+        if (options_.workers == 0) return;
         prefetch(options_.max_jobs);
     }
 

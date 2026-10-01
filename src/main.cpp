@@ -310,7 +310,7 @@ static void render_progress_bar(const std::string& prefix, size_t current, size_
     int eta_s = static_cast<int>(eta_sec) % 60;
 
     if (!is_terminal()) {
-        if (current == 1 || current == total || current % 5 == 0) {
+        if (total <= 20 || current == 1 || current == total || current % 5 == 0) {
             std::cout << prefix << " " << std::setw(3) << static_cast<int>(pct * 100.0f) << "%|"
                       << bar << "| " << current << "/" << total
                       << " [" << std::setfill('0') << std::setw(2) << el_m << ":" << std::setw(2) << el_s
@@ -741,13 +741,18 @@ int main(int argc, char* argv[]) {
             std::vector<size_t> train_indices(indices.begin(), indices.begin() + train_count);
             std::vector<size_t> val_indices(indices.begin() + train_count, indices.end());
 
-            size_t n_workers = 1;  // Disabled async workers for stability (was using hardware_concurrency)
+            // workers=0: single-threaded main-thread loading — avoids DataShuttle
+            // inter-thread deadlocks that cause infinite blocking on large image batches.
+            // To re-enable async prefetch, set n_workers >= 1 and also set a timeout.
+            size_t n_workers = 0;
             soar::data::DataLoaderOptions loader_opts;
             loader_opts.batch_size = batch_size;
             loader_opts.workers = n_workers;
-            loader_opts.prefetch_factor = 2;  // Reduced prefetch for stability
+            loader_opts.prefetch_factor = 2;
             loader_opts.shuffle = true;
-            loader_opts.pin_memory = true;
+            loader_opts.pin_memory = false;  // pin_memory only useful with async workers
+            // Safety timeout: if somehow the loader blocks, surface an error instead of hanging.
+            loader_opts.timeout = std::chrono::milliseconds(300000);  // 5 minutes max per batch
 
             soar::data::DataLoader train_loader(ds, loader_opts, train_indices);
             size_t total_train_batches = train_loader.total_batches();
@@ -766,6 +771,7 @@ int main(int argc, char* argv[]) {
                 size_t step_idx = 0;
 
                 std::string ep_prefix = "Epoch " + std::to_string(ep + 1) + "/" + std::to_string(epochs) + ":";
+                std::cout << "[SOAR Engine] Starting " << ep_prefix << " (" << total_train_batches << " batches)..." << std::endl;
 
                 for (const auto& batch : train_loader) {
                     bool is_accumulating = ((step_idx + 1) % accumulate_grad_batches != 0) && ((step_idx + 1) != total_train_batches);

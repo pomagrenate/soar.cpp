@@ -161,7 +161,7 @@ private:
      */
     void release_node_activations(std::shared_ptr<AutogradNode> node);
     
-    std::mutex engine_mutex_;
+    std::recursive_mutex engine_mutex_;
     std::shared_ptr<ReadyQueue> cpu_ready_queue_;
     std::vector<std::thread> worker_threads_;
     std::atomic<bool> initialized_{false};
