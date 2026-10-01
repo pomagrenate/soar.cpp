@@ -39,6 +39,7 @@ using PFN_cuDeviceGetName = CUresult (*)(char *name, int len, CUdevice dev);
 using PFN_cuDeviceTotalMem = CUresult (*)(size_t *bytes, CUdevice dev);
 using PFN_cuDeviceGetAttribute = CUresult (*)(int *pi, int attrib, CUdevice dev);
 using PFN_cuCtxCreate = CUresult (*)(CUcontext *pctx, unsigned int flags, CUdevice dev);
+using PFN_cuDevicePrimaryCtxRetain = CUresult (*)(CUcontext *pctx, CUdevice dev);
 using PFN_cuCtxDestroy = CUresult (*)(CUcontext ctx);
 using PFN_cuCtxSetCurrent = CUresult (*)(CUcontext ctx);
 using PFN_cuCtxSynchronize = CUresult (*)(void);
@@ -75,6 +76,7 @@ PFN_cuDeviceGetName pfn_cuDeviceGetName = nullptr;
 PFN_cuDeviceTotalMem pfn_cuDeviceTotalMem = nullptr;
 PFN_cuDeviceGetAttribute pfn_cuDeviceGetAttribute = nullptr;
 PFN_cuCtxCreate pfn_cuCtxCreate = nullptr;
+PFN_cuDevicePrimaryCtxRetain pfn_cuDevicePrimaryCtxRetain = nullptr;
 PFN_cuCtxDestroy pfn_cuCtxDestroy = nullptr;
 PFN_cuCtxSetCurrent pfn_cuCtxSetCurrent = nullptr;
 PFN_cuCtxSynchronize pfn_cuCtxSynchronize = nullptr;
@@ -155,6 +157,7 @@ void ensure_cuda_driver_initialized() {
     pfn_cuDeviceGetAttribute = reinterpret_cast<PFN_cuDeviceGetAttribute>(get_symbol(g_cuda_driver_lib, "cuDeviceGetAttribute"));
     pfn_cuCtxCreate = reinterpret_cast<PFN_cuCtxCreate>(get_symbol(g_cuda_driver_lib, "cuCtxCreate_v2"));
     if (!pfn_cuCtxCreate) pfn_cuCtxCreate = reinterpret_cast<PFN_cuCtxCreate>(get_symbol(g_cuda_driver_lib, "cuCtxCreate"));
+    pfn_cuDevicePrimaryCtxRetain = reinterpret_cast<PFN_cuDevicePrimaryCtxRetain>(get_symbol(g_cuda_driver_lib, "cuDevicePrimaryCtxRetain"));
     pfn_cuCtxDestroy = reinterpret_cast<PFN_cuCtxDestroy>(get_symbol(g_cuda_driver_lib, "cuCtxDestroy_v2"));
     if (!pfn_cuCtxDestroy) pfn_cuCtxDestroy = reinterpret_cast<PFN_cuCtxDestroy>(get_symbol(g_cuda_driver_lib, "cuCtxDestroy"));
     pfn_cuCtxSetCurrent = reinterpret_cast<PFN_cuCtxSetCurrent>(get_symbol(g_cuda_driver_lib, "cuCtxSetCurrent"));
@@ -216,9 +219,11 @@ void ensure_cuda_driver_initialized() {
     }
 
     res = pfn_cuDeviceGet(&g_cuDevice, 0);
-    if (res == CUDA_SUCCESS && pfn_cuCtxCreate) {
-        res = pfn_cuCtxCreate(&g_cuContext, CU_CTX_SCHED_AUTO, g_cuDevice);
-        if (res == CUDA_SUCCESS && g_cuContext) {
+    if (res == CUDA_SUCCESS) {
+        if (pfn_cuDevicePrimaryCtxRetain && pfn_cuDevicePrimaryCtxRetain(&g_cuContext, g_cuDevice) == CUDA_SUCCESS && g_cuContext) {
+            if (pfn_cuCtxSetCurrent) pfn_cuCtxSetCurrent(g_cuContext);
+            g_has_real_cuda = true;
+        } else if (pfn_cuCtxCreate && pfn_cuCtxCreate(&g_cuContext, CU_CTX_SCHED_AUTO, g_cuDevice) == CUDA_SUCCESS && g_cuContext) {
             g_has_real_cuda = true;
         }
     }

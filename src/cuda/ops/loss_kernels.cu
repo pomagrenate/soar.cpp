@@ -54,8 +54,8 @@ float bce_with_logits_forward(const float* logits, const float* targets,
     cudaStream_t s = static_cast<cudaStream_t>(stream);
 
     float* d_loss = nullptr;
-    cudaMallocAsync(&d_loss, sizeof(float), s);
-    cudaMemsetAsync(d_loss, 0, sizeof(float), s);
+    SOAR_CUDA_CHECK(cudaMalloc(&d_loss, sizeof(float)));
+    SOAR_CUDA_CHECK(cudaMemsetAsync(d_loss, 0, sizeof(float), s));
 
     int blocks = GET_BLOCKS(static_cast<int64_t>(n), 256);
     k_bce_with_logits_forward<<<blocks, 256, 0, s>>>(
@@ -63,9 +63,9 @@ float bce_with_logits_forward(const float* logits, const float* targets,
     SOAR_CUDA_KERNEL_LAUNCH_CHECK_DEBUG();
 
     float h_loss = 0.0f;
-    cudaMemcpyAsync(&h_loss, d_loss, sizeof(float), cudaMemcpyDeviceToHost, s);
-    cudaFreeAsync(d_loss, s);
-    cudaStreamSynchronize(s);
+    SOAR_CUDA_CHECK(cudaMemcpyAsync(&h_loss, d_loss, sizeof(float), cudaMemcpyDeviceToHost, s));
+    SOAR_CUDA_CHECK(cudaStreamSynchronize(s));
+    cudaFree(d_loss);
 
     return static_cast<float>(weight * (static_cast<double>(h_loss) / static_cast<double>(n)));
 }
@@ -148,8 +148,8 @@ float dice_loss_forward(const float* logits, const float* targets,
     cudaStream_t s = static_cast<cudaStream_t>(stream);
 
     float* d_accum = nullptr;
-    cudaMallocAsync(&d_accum, 3 * sizeof(float), s);
-    cudaMemsetAsync(d_accum, 0, 3 * sizeof(float), s);
+    SOAR_CUDA_CHECK(cudaMalloc(&d_accum, 3 * sizeof(float)));
+    SOAR_CUDA_CHECK(cudaMemsetAsync(d_accum, 0, 3 * sizeof(float), s));
 
     int blocks = GET_BLOCKS(static_cast<int64_t>(n), 256);
     k_dice_loss_forward<<<blocks, 256, 0, s>>>(
@@ -157,9 +157,9 @@ float dice_loss_forward(const float* logits, const float* targets,
     SOAR_CUDA_KERNEL_LAUNCH_CHECK_DEBUG();
 
     float h_accum[3] = {0.0f, 0.0f, 0.0f};
-    cudaMemcpyAsync(h_accum, d_accum, 3 * sizeof(float), cudaMemcpyDeviceToHost, s);
-    cudaFreeAsync(d_accum, s);
-    cudaStreamSynchronize(s);
+    SOAR_CUDA_CHECK(cudaMemcpyAsync(h_accum, d_accum, 3 * sizeof(float), cudaMemcpyDeviceToHost, s));
+    SOAR_CUDA_CHECK(cudaStreamSynchronize(s));
+    cudaFree(d_accum);
 
     out_inter = h_accum[0];
     out_sum_p = h_accum[1];

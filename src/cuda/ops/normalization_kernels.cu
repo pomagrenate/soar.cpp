@@ -269,8 +269,8 @@ void group_norm_backward(const float* grad_out, const float* in, const float* ga
         // Allocate temporary scratch for group reductions
         float* sum_dy_gamma = nullptr;
         float* sum_dy_gamma_diff = nullptr;
-        cudaMallocAsync(&sum_dy_gamma, num_groups * sizeof(float), s);
-        cudaMallocAsync(&sum_dy_gamma_diff, num_groups * sizeof(float), s);
+        SOAR_CUDA_CHECK(cudaMalloc(&sum_dy_gamma, num_groups * sizeof(float)));
+        SOAR_CUDA_CHECK(cudaMalloc(&sum_dy_gamma_diff, num_groups * sizeof(float)));
 
         k_group_norm_backward_moments<<<static_cast<unsigned int>(num_groups), 256, 0, s>>>(
             grad_out, in, gamma, saved_mean, sum_dy_gamma, sum_dy_gamma_diff,
@@ -283,8 +283,8 @@ void group_norm_backward(const float* grad_out, const float* in, const float* ga
             grad_in, total, cpg, static_cast<int64_t>(HW));
         SOAR_CUDA_KERNEL_LAUNCH_CHECK_DEBUG();
 
-        cudaFreeAsync(sum_dy_gamma, s);
-        cudaFreeAsync(sum_dy_gamma_diff, s);
+        cudaFree(sum_dy_gamma);
+        cudaFree(sum_dy_gamma_diff);
     }
 }
 

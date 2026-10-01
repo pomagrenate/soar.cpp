@@ -356,7 +356,7 @@ void conv2d_forward(const float* in, const float* weight, const float* bias, flo
     size_t col_size = in_group_c * K * K * HW_out;
 
     float* d_columns = nullptr;
-    cudaMallocAsync(&d_columns, col_size * sizeof(float), s);
+    SOAR_CUDA_CHECK(cudaMalloc(&d_columns, col_size * sizeof(float)));
 
     for (size_t g = 0; g < groups; ++g) {
         const float* in_g = in + g * in_group_c * H_in * W_in;
@@ -367,7 +367,7 @@ void conv2d_forward(const float* in, const float* weight, const float* bias, flo
         im2col<float>(s, in_g, in_group_c, H_in, W_in, H_out, W_out, K, K, pad, pad, stride, stride, dil, dil, d_columns);
         conv2d_1x1_forward(d_columns, w_g, b_g, out_g, in_group_c * K * K, out_group_c, HW_out, s);
     }
-    cudaFreeAsync(d_columns, s);
+    cudaFree(d_columns);
 }
 
 void conv2d_backward(const float* grad_out, const float* in, const float* weight,
@@ -392,9 +392,9 @@ void conv2d_backward(const float* grad_out, const float* in, const float* weight
 
     float* d_columns = nullptr;
     float* d_grad_columns = nullptr;
-    cudaMallocAsync(&d_columns, col_size * sizeof(float), s);
+    SOAR_CUDA_CHECK(cudaMalloc(&d_columns, col_size * sizeof(float)));
     if (grad_in) {
-        cudaMallocAsync(&d_grad_columns, col_size * sizeof(float), s);
+        SOAR_CUDA_CHECK(cudaMalloc(&d_grad_columns, col_size * sizeof(float)));
     }
 
     for (size_t g = 0; g < groups; ++g) {
@@ -418,8 +418,8 @@ void conv2d_backward(const float* grad_out, const float* in, const float* weight
         }
     }
 
-    cudaFreeAsync(d_columns, s);
-    if (d_grad_columns) cudaFreeAsync(d_grad_columns, s);
+    cudaFree(d_columns);
+    if (d_grad_columns) cudaFree(d_grad_columns);
 }
 
 } // namespace soar::cuda::kernels
