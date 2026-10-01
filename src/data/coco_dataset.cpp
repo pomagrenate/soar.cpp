@@ -150,6 +150,8 @@ void COCODataset::parse_json(const std::string& json_path) {
     long sz = std::ftell(in);
     std::fseek(in, 0, SEEK_SET);
 
+    std::cout << "[SOAR Engine] Reading annotation file: " << json_path << " (" << (sz / (1024 * 1024)) << " MB)..." << std::flush;
+
     std::string content;
     if (sz > 0) {
         content.resize(static_cast<size_t>(sz));
@@ -158,10 +160,13 @@ void COCODataset::parse_json(const std::string& json_path) {
     }
     std::fclose(in);
 
+    std::cout << " Parsing JSON..." << std::flush;
     nlohmann::json j = nlohmann::json::parse(content, nullptr, false);
     if (j.is_discarded()) {
+        std::cout << " FAILED!" << std::endl;
         throw DeviceError("Failed to parse COCO annotation JSON file: " + json_path);
     }
+    std::cout << " Done." << std::endl;
 
     std::unordered_map<std::string, std::string> id_to_filename;
 
@@ -237,6 +242,7 @@ void COCODataset::parse_json(const std::string& json_path) {
     }
 
     // Pre-resolve file paths and matched annotations once for all image records
+    std::cout << "[SOAR Engine] Matching annotations for " << image_records_.size() << " images..." << std::flush;
     for (auto& rec : image_records_) {
         std::string candidate;
         if (images_dir_.empty() || images_dir_ == ".") {
@@ -301,6 +307,7 @@ void COCODataset::parse_json(const std::string& json_path) {
             }
         }
     }
+    std::cout << " Done." << std::endl;
 }
 
 DatasetSample COCODataset::get_sample(size_t index) const {
